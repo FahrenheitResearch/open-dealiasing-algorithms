@@ -3,9 +3,66 @@ from __future__ import annotations
 import numpy as np
 
 from ._core import combine_references, fold_counts, shift2d, shift3d, unfold_to_reference
+from ._rust_bridge import get_rust_backend
 from .multipass import dealias_sweep_zw06
 from .types import DealiasResult
 from .vad import build_reference_from_uv
+
+
+_NATIVE_BACKEND = get_rust_backend()
+
+
+def _gate_stats(observed: np.ndarray, corrected: np.ndarray) -> dict[str, int | float]:
+    valid = np.isfinite(observed)
+    assigned = np.isfinite(corrected)
+    valid_gates = int(np.sum(valid))
+    assigned_gates = int(np.sum(assigned))
+    unresolved_gates = int(np.sum(valid & ~assigned))
+    resolved_fraction = float(assigned_gates / valid_gates) if valid_gates else 0.0
+    return {
+        'valid_gates': valid_gates,
+        'assigned_gates': assigned_gates,
+        'unresolved_gates': unresolved_gates,
+        'resolved_fraction': resolved_fraction,
+    }
+
+
+def _fold_counts_by_sweep(corrected: np.ndarray, observed: np.ndarray, nyquist: float | np.ndarray) -> np.ndarray:
+    if np.isscalar(nyquist):
+        return fold_counts(corrected, observed, float(nyquist))
+    nyq = np.asarray(nyquist, dtype=float)
+    if nyq.ndim != 1 or nyq.shape[0] != corrected.shape[0]:
+        raise ValueError('nyquist must be scalar or length n_sweeps')
+    folds = np.zeros(corrected.shape, dtype=np.int16)
+    for sweep in range(corrected.shape[0]):
+        folds[sweep] = fold_counts(corrected[sweep], observed[sweep], float(nyq[sweep]))
+    return folds
+
+
+def _native_method(name: str):
+    if _NATIVE_BACKEND is None:
+        return None
+    method = getattr(_NATIVE_BACKEND, name, None)
+    return method if callable(method) else None
+
+
+def _coerce_native_result(result, *, reference: np.ndarray | None) -> DealiasResult:
+    if isinstance(result, DealiasResult):
+        return result
+    if len(result) == 5:
+        velocity, folds, confidence, ref_out, metadata = result
+    elif len(result) == 4:
+        velocity, folds, confidence, metadata = result
+        ref_out = reference
+    else:
+        raise ValueError("native dealiaser must return a 4- or 5-tuple")
+    return DealiasResult(
+        velocity=np.asarray(velocity, dtype=float),
+        folds=np.asarray(folds, dtype=np.int16),
+        confidence=np.asarray(confidence, dtype=float),
+        reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
+        metadata=dict(metadata),
+    )
 
 
 def dealias_sweep_jh01(
@@ -31,6 +88,22 @@ def dealias_sweep_jh01(
     if ref is None:
         raise ValueError('previous_corrected or background_reference is required')
 
+    native = _native_method('dealias_sweep_jh01')
+    if native is not None:
+        native_result = native(
+            obs,
+            float(nyquist),
+            None if previous_corrected is None else np.asarray(previous_corrected, dtype=float),
+            None if background_reference is None else np.asarray(background_reference, dtype=float),
+            int(shift_az),
+            int(shift_range),
+            bool(wrap_azimuth),
+            bool(refine_with_multipass),
+        )
+        result = _coerce_native_result(native_result, reference=ref)
+        result.reference = ref if result.reference is None else result.reference
+        return result
+
     first_guess = unfold_to_reference(obs, ref, nyquist)
     if not refine_with_multipass:
         confidence = np.where(np.isfinite(first_guess), 0.85, 0.0)
@@ -44,6 +117,8 @@ def dealias_sweep_jh01(
                 'method': 'temporal_reference_only',
                 'shift_az': int(shift_az),
                 'shift_range': int(shift_range),
+                'fill_policy': 'temporal_reference_only',
+                **_gate_stats(obs, first_guess),
             },
         )
 
@@ -54,6 +129,8 @@ def dealias_sweep_jh01(
         'method': 'temporal_multipass',
         'shift_az': int(shift_az),
         'shift_range': int(shift_range),
+        'fill_policy': 'temporal_reference_then_multipass_cleanup',
+        **_gate_stats(obs, result.velocity),
     })
     return result
 
@@ -91,6 +168,21 @@ def dealias_volume_jh01(
         nyq = np.asarray(nyquist, dtype=float)
         if nyq.shape != (obs.shape[0],):
             raise ValueError('nyquist must be scalar or length n_sweeps')
+
+    native = _native_method('dealias_volume_jh01')
+    if native is not None:
+        native_result = native(
+            obs,
+            nyq,
+            az,
+            el,
+            None if previous_volume is None else np.asarray(previous_volume, dtype=float),
+            background_uv,
+            int(shift_az),
+            int(shift_range),
+            bool(wrap_azimuth),
+        )
+        return _coerce_native_result(native_result, reference=None)
 
     corrected = np.full(obs.shape, np.nan, dtype=float)
     confidence = np.zeros(obs.shape, dtype=float)
@@ -134,7 +226,7 @@ def dealias_volume_jh01(
 
     return DealiasResult(
         velocity=corrected,
-        folds=fold_counts(corrected, obs, float(np.max(nyq))),
+        folds=_fold_counts_by_sweep(corrected, obs, nyq),
         confidence=confidence,
         reference=reference,
         metadata={
@@ -144,5 +236,7 @@ def dealias_volume_jh01(
             'shift_az': int(shift_az),
             'shift_range': int(shift_range),
             'per_sweep': per_sweep_meta,
+            'fill_policy': 'descending_volume_reference_then_cleanup',
+            **_gate_stats(obs, corrected),
         },
     )

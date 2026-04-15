@@ -5,8 +5,12 @@ import warnings
 
 import numpy as np
 
+from ._rust_bridge import get_rust_backend
+
 
 ArrayLike = np.ndarray | Iterable[float]
+_NATIVE_BACKEND = get_rust_backend()
+RUST_BACKEND_AVAILABLE = _NATIVE_BACKEND is not None
 
 
 def as_float_array(data: ArrayLike | np.ndarray, *, copy: bool = True) -> np.ndarray:
@@ -14,17 +18,24 @@ def as_float_array(data: ArrayLike | np.ndarray, *, copy: bool = True) -> np.nda
     return arr.copy() if copy else arr
 
 
-def wrap_to_nyquist(velocity: np.ndarray | float, nyquist: float) -> np.ndarray:
+def _python_wrap_to_nyquist(velocity: np.ndarray | float, nyquist: float) -> np.ndarray:
     """Wrap velocity into [-nyquist, nyquist)."""
     if nyquist <= 0:
         raise ValueError('nyquist must be positive')
     vel = np.asarray(velocity, dtype=float)
-    wrapped = ((vel + nyquist) % (2.0 * nyquist)) - nyquist
+    with np.errstate(all='ignore'):
+        wrapped = ((vel + nyquist) % (2.0 * nyquist)) - nyquist
     wrapped = np.where(np.isfinite(vel), wrapped, np.nan)
     return wrapped
 
 
-def fold_counts(unfolded: np.ndarray, observed: np.ndarray, nyquist: float) -> np.ndarray:
+def wrap_to_nyquist(velocity: np.ndarray | float, nyquist: float) -> np.ndarray:
+    if _NATIVE_BACKEND is not None:
+        return _NATIVE_BACKEND.wrap_to_nyquist(np.asarray(velocity, dtype=float), float(nyquist))
+    return _python_wrap_to_nyquist(velocity, nyquist)
+
+
+def _python_fold_counts(unfolded: np.ndarray, observed: np.ndarray, nyquist: float) -> np.ndarray:
     if nyquist <= 0:
         raise ValueError('nyquist must be positive')
     counts = np.rint((np.asarray(unfolded, dtype=float) - np.asarray(observed, dtype=float)) / (2.0 * nyquist))
@@ -32,7 +43,17 @@ def fold_counts(unfolded: np.ndarray, observed: np.ndarray, nyquist: float) -> n
     return counts.astype(np.int16)
 
 
-def unfold_to_reference(
+def fold_counts(unfolded: np.ndarray, observed: np.ndarray, nyquist: float) -> np.ndarray:
+    if _NATIVE_BACKEND is not None:
+        unfolded_arr, observed_arr = np.broadcast_arrays(
+            np.asarray(unfolded, dtype=float),
+            np.asarray(observed, dtype=float),
+        )
+        return _NATIVE_BACKEND.fold_counts(unfolded_arr, observed_arr, float(nyquist))
+    return _python_fold_counts(unfolded, observed, nyquist)
+
+
+def _python_unfold_to_reference(
     observed: np.ndarray | float,
     reference: np.ndarray | float,
     nyquist: float,
@@ -49,6 +70,27 @@ def unfold_to_reference(
     out = obs + 2.0 * nyquist * folds
     out = np.where(np.isfinite(obs) & np.isfinite(ref), out, np.nan)
     return out
+
+
+def unfold_to_reference(
+    observed: np.ndarray | float,
+    reference: np.ndarray | float,
+    nyquist: float,
+    *,
+    max_abs_fold: int = 32,
+) -> np.ndarray:
+    if _NATIVE_BACKEND is not None:
+        observed_arr, reference_arr = np.broadcast_arrays(
+            np.asarray(observed, dtype=float),
+            np.asarray(reference, dtype=float),
+        )
+        return _NATIVE_BACKEND.unfold_to_reference(
+            observed_arr,
+            reference_arr,
+            float(nyquist),
+            int(max_abs_fold),
+        )
+    return _python_unfold_to_reference(observed, reference, nyquist, max_abs_fold=max_abs_fold)
 
 
 def combine_references(*refs: np.ndarray | None) -> np.ndarray | None:
@@ -72,7 +114,7 @@ def gaussian_confidence(mismatch: np.ndarray, scale: float) -> np.ndarray:
     return out
 
 
-def shift2d(field: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_azimuth: bool = True) -> np.ndarray:
+def _python_shift2d(field: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_azimuth: bool = True) -> np.ndarray:
     """Integer shift for sweep-aligned references."""
     arr = np.asarray(field, dtype=float)
     if arr.ndim != 2:
@@ -95,15 +137,36 @@ def shift2d(field: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_
     return out
 
 
-def shift3d(volume: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_azimuth: bool = True) -> np.ndarray:
+def shift2d(field: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_azimuth: bool = True) -> np.ndarray:
+    if _NATIVE_BACKEND is not None:
+        arr = np.asarray(field, dtype=float)
+        if arr.ndim != 2:
+            raise ValueError('field must be 2D')
+        return _NATIVE_BACKEND.shift2d(arr, int(shift_az), int(shift_range), bool(wrap_azimuth))
+    return _python_shift2d(field, shift_az=shift_az, shift_range=shift_range, wrap_azimuth=wrap_azimuth)
+
+
+def _python_shift3d(volume: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_azimuth: bool = True) -> np.ndarray:
     arr = np.asarray(volume, dtype=float)
     if arr.ndim != 3:
         raise ValueError('volume must be 3D')
-    return np.stack([shift2d(s, shift_az=shift_az, shift_range=shift_range, wrap_azimuth=wrap_azimuth) for s in arr], axis=0)
+    return np.stack([
+        _python_shift2d(s, shift_az=shift_az, shift_range=shift_range, wrap_azimuth=wrap_azimuth)
+        for s in arr
+    ], axis=0)
+
+
+def shift3d(volume: np.ndarray, shift_az: int = 0, shift_range: int = 0, *, wrap_azimuth: bool = True) -> np.ndarray:
+    if _NATIVE_BACKEND is not None:
+        arr = np.asarray(volume, dtype=float)
+        if arr.ndim != 3:
+            raise ValueError('volume must be 3D')
+        return _NATIVE_BACKEND.shift3d(arr, int(shift_az), int(shift_range), bool(wrap_azimuth))
+    return _python_shift3d(volume, shift_az=shift_az, shift_range=shift_range, wrap_azimuth=wrap_azimuth)
 
 
 def _shift_for_stack(arr: np.ndarray, da: int, dr: int, *, wrap_azimuth: bool = True) -> np.ndarray:
-    shifted = shift2d(arr, shift_az=da, shift_range=dr, wrap_azimuth=wrap_azimuth)
+    shifted = _python_shift2d(arr, shift_az=da, shift_range=dr, wrap_azimuth=wrap_azimuth)
     return shifted
 
 
@@ -112,6 +175,8 @@ def neighbor_stack(field: np.ndarray, *, include_diagonals: bool = True, wrap_az
     arr = np.asarray(field, dtype=float)
     if arr.ndim != 2:
         raise ValueError('field must be 2D')
+    if _NATIVE_BACKEND is not None:
+        return _NATIVE_BACKEND.neighbor_stack(arr, bool(include_diagonals), bool(wrap_azimuth))
     offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
     if include_diagonals:
         offsets.extend([(-1, -1), (-1, 1), (1, -1), (1, 1)])
@@ -122,6 +187,8 @@ def texture_3x3(field: np.ndarray, *, wrap_azimuth: bool = True) -> np.ndarray:
     arr = np.asarray(field, dtype=float)
     if arr.ndim != 2:
         raise ValueError('field must be 2D')
+    if _NATIVE_BACKEND is not None:
+        return _NATIVE_BACKEND.texture_3x3(arr, bool(wrap_azimuth))
     offsets = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
     stack = np.stack([_shift_for_stack(arr, da, dr, wrap_azimuth=wrap_azimuth) for da, dr in offsets], axis=0)
     with warnings.catch_warnings():

@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import warnings
+from typing import Any
 
 import numpy as np
 
 from ._core import as_float_array, fold_counts, gaussian_confidence, neighbor_stack, texture_3x3, unfold_to_reference
+from ._rust_bridge import get_rust_backend
 from .types import DealiasResult
 from .variational import dealias_sweep_variational
 
 __all__ = ["LinearBranchModel", "fit_ml_reference_model", "dealias_sweep_ml"]
+
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 @dataclass(slots=True)
@@ -22,6 +27,13 @@ class LinearBranchModel:
     train_rmse: float
     mode: str
     nyquist: float | None
+
+
+def _native_method(name: str):
+    if _NATIVE_BACKEND is None:
+        return None
+    method = getattr(_NATIVE_BACKEND, name, None)
+    return method if callable(method) else None
 
 
 def _safe_nanmedian(arr: np.ndarray, axis: int = 0) -> np.ndarray:
@@ -77,6 +89,62 @@ def _build_feature_stack(
     return stack, names
 
 
+def _coerce_linear_branch_model(native_result: Any) -> LinearBranchModel:
+    if isinstance(native_result, LinearBranchModel):
+        return native_result
+    if isinstance(native_result, dict):
+        weights = native_result.get("weights")
+        feature_names = native_result.get("feature_names")
+        ridge = native_result.get("ridge")
+        train_rmse = native_result.get("train_rmse")
+        mode = native_result.get("mode")
+        nyquist = native_result.get("nyquist")
+    else:
+        values = tuple(native_result)
+        if len(values) == 6:
+            weights, feature_names, ridge, train_rmse, mode, nyquist = values
+        elif len(values) == 5:
+            weights, feature_names, ridge, train_rmse, mode = values
+            nyquist = None
+        else:  # pragma: no cover - defensive against future API drift.
+            raise ValueError("native ML backend returned an unexpected result shape")
+    return LinearBranchModel(
+        weights=np.asarray(weights, dtype=float),
+        feature_names=[str(name) for name in feature_names],
+        ridge=float(ridge),
+        train_rmse=float(train_rmse),
+        mode=str(mode),
+        nyquist=None if nyquist is None else float(nyquist),
+    )
+
+
+def _coerce_dealias_result(native_result: Any, *, reference: np.ndarray | None) -> DealiasResult:
+    if isinstance(native_result, DealiasResult):
+        return native_result
+    if isinstance(native_result, dict):
+        velocity = native_result.get("velocity")
+        folds = native_result.get("folds")
+        confidence = native_result.get("confidence")
+        ref_out = native_result.get("reference", reference)
+        metadata = native_result.get("metadata", {})
+    else:
+        values = tuple(native_result)
+        if len(values) == 5:
+            velocity, folds, confidence, ref_out, metadata = values
+        elif len(values) == 4:
+            velocity, folds, confidence, metadata = values
+            ref_out = reference
+        else:  # pragma: no cover - defensive against future API drift.
+            raise ValueError("native ML backend returned an unexpected result shape")
+    return DealiasResult(
+        velocity=np.asarray(velocity, dtype=float),
+        folds=np.asarray(folds, dtype=np.int16),
+        confidence=np.asarray(confidence, dtype=float),
+        reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
+        metadata=dict(metadata),
+    )
+
+
 def fit_ml_reference_model(
     observed: np.ndarray,
     target_velocity: np.ndarray,
@@ -91,6 +159,18 @@ def fit_ml_reference_model(
     target = np.asarray(target_velocity, dtype=float)
     if obs.ndim != 2 or target.shape != obs.shape:
         raise ValueError("observed and target_velocity must be 2D with the same shape")
+
+    native_method = _native_method("fit_ml_reference_model")
+    if native_method is not None:
+        native_result = native_method(
+            obs,
+            target,
+            nyquist=None if nyquist is None else float(nyquist),
+            reference=None if reference is None else np.asarray(reference, dtype=float),
+            azimuth_deg=None if azimuth_deg is None else np.asarray(azimuth_deg, dtype=float),
+            ridge=float(ridge),
+        )
+        return _coerce_linear_branch_model(native_result)
 
     X, names = _build_feature_stack(obs, reference=reference, azimuth_deg=azimuth_deg)
     mask = np.isfinite(target) & np.isfinite(obs)
@@ -166,6 +246,20 @@ def dealias_sweep_ml(
     target = None if training_target is None else np.asarray(training_target, dtype=float)
     if target is not None and target.shape != obs.shape:
         raise ValueError("training_target must match observed shape")
+
+    native_method = _native_method("dealias_sweep_ml")
+    if native_method is not None:
+        native_result = native_method(
+            obs,
+            float(nyquist),
+            model=model,
+            training_target=target,
+            reference=ref,
+            azimuth_deg=None if azimuth_deg is None else np.asarray(azimuth_deg, dtype=float),
+            ridge=float(ridge),
+            refine_with_variational=bool(refine_with_variational),
+        )
+        return _coerce_dealias_result(native_result, reference=ref)
 
     trained_from = "supplied_model"
     if model is None:

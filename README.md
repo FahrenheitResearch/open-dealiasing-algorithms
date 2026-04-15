@@ -80,7 +80,9 @@ open-dealiasing-algorithms/
 |-- EVALUATION.md
 |-- REPO_SELECTION.md
 |-- MERGE_MAP.md
+|-- Cargo.toml
 |-- pyproject.toml
+|-- setup.py
 |-- requirements.txt
 |-- docs/
 |   |-- algorithm-taxonomy.md
@@ -93,6 +95,7 @@ open-dealiasing-algorithms/
 |-- open_dealias/
 |   |-- __init__.py
 |   |-- _core.py
+|   |-- _rust_bridge.py
 |   |-- continuity.py
 |   |-- dual_prf.py
 |   |-- fourdd.py
@@ -109,10 +112,13 @@ open-dealiasing-algorithms/
 |   `-- volume3d.py
 |-- examples/
 |   |-- README.md
+|   |-- benchmark_support.py
 |   |-- js_demo.mjs
 |   |-- klot_same_scan_benchmark.py
+|   |-- moore_fullscan_speed_report.py
 |   |-- nexrad_level2_demo.py
 |   |-- python_demo.py
+|   |-- region_variational_migration_benchmark.py
 |   |-- synthetic_1d_demo.py
 |   |-- synthetic_2d_demo.py
 |   `-- synthetic_temporal_demo.py
@@ -121,13 +127,21 @@ open-dealiasing-algorithms/
 |   |-- open_dealias.ts
 |   |-- package.json
 |   `-- tsconfig.json
+|-- rust/
+|   |-- open_dealias_core/
+|   `-- open_dealias_py/
 `-- tests/
+    |-- test_benchmark_support.py
     |-- test_dualprf_volume3d.py
+    |-- test_fourdd_rust.py
+    |-- test_ml_rust.py
     |-- test_nexrad_helpers.py
     |-- test_open_dealias.py
     |-- test_qc_variational_ml.py
     |-- test_reference_scenarios.py
-    `-- test_region_graph_recursive.py
+    |-- test_rust_core.py
+    |-- test_region_graph_recursive.py
+    `-- test_vad_rust.py
 ```
 
 ## Install
@@ -137,6 +151,13 @@ Python:
 ```bash
 pip install -e .[dev]
 ```
+
+That editable install now builds the Rust extension when a Rust toolchain is
+available. The current Rust-backed path covers the speed-relevant solver stack:
+the lowest-level hot-path helpers in `open_dealias._core`, QC mask
+construction, `es90`, `zw06`, `xu11`, `jh01` sweep and volume modes,
+`region_graph`, `recursive`, variational refinement, `dual_prf`, `volume_3d`,
+and `ml`. I/O, plotting, archive utilities, and some glue code remain Python.
 
 For real Level II archive access:
 
@@ -184,12 +205,42 @@ pytest -q
 python examples/python_demo.py
 python examples/nexrad_level2_demo.py --radar KLOT
 python examples/klot_same_scan_benchmark.py
+python examples/moore_fullscan_speed_report.py
 python examples/synthetic_1d_demo.py
 python examples/synthetic_2d_demo.py
 python examples/synthetic_temporal_demo.py
 ```
 
 The plotting demos write PNGs into `examples/output/`.
+
+## Rust backend
+
+This repo now includes a substantial Rust migration under `rust/`:
+
+- `rust/open_dealias_core`
+  pure Rust implementations of `wrap_to_nyquist`, `fold_counts`,
+  `unfold_to_reference`, `shift2d`, `shift3d`, `neighbor_stack`,
+  `texture_3x3`, the QC mask builder, `es90`, `zw06`, `xu11`, `jh01`
+  sweep and volume solvers, `region_graph`, `recursive`, variational
+  refinement, `dual_prf`, `volume_3d`, and `ml`
+- `rust/open_dealias_py`
+  a PyO3 extension that exposes those helpers and Rust-backed solver entry
+  points to Python
+- `open_dealias/_rust_bridge.py`
+  runtime detection of the native extension
+
+The algorithm hot path is now native-backed, while real-data I/O, examples,
+plotting, and fallback orchestration stay in Python.
+
+For a current end-to-end speed check on a real tornado case:
+
+```bash
+python examples/moore_fullscan_speed_report.py
+```
+
+The checked Moore-case report in `examples/output/` measures the native-backed
+stack on `KTLX20130520_200356_V06.gz` at `83.335s` for the pure-Python baseline
+versus `41.523s` for the current package path, or about `2.01x` faster overall.
 
 ## Real radar data
 
@@ -222,6 +273,11 @@ For the fixed proof benchmark used in this repo:
 python examples/klot_same_scan_benchmark.py
 ```
 
+That benchmark compares scored methods against Py-ART as an open reference,
+but it does not train on Py-ART targets or synthesize missing support data. If a
+method cannot be run fairly on the chosen case, the script marks it skipped and
+records the reason.
+
 ## Evidence policy
 
 When this repo talks about a closed-source app, every claim should be read as
@@ -244,8 +300,7 @@ This is a strong open baseline, not a finished operational stack. It still lacks
 - a real ingest/output layer for radar formats,
 - explicit unresolved-mask and QC pipelines,
 - CI-backed comparison notebooks and figures,
-- implementations of multi-PRF, global-optimization, and ML-assisted families,
-- a Rust core with PyO3 and WASM bindings.
+- WASM / JS bindings on top of the Rust core.
 
 ## Provenance
 

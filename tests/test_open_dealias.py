@@ -81,3 +81,26 @@ def test_volume_jh01_runs_descending_and_returns_3d():
     )
     assert res.velocity.shape == volume_obs.shape
     assert len(res.metadata['elevation_order_desc']) == 2
+
+
+def test_volume_jh01_uses_per_sweep_nyquist_for_fold_counts():
+    az = np.array([0.0])
+    truth_volume = np.array([[[19.0]], [[19.0]]])
+    observed_volume = np.array([[[-1.0]], [[19.0]]])
+    previous_volume = truth_volume.copy()
+
+    res = dealias_volume_jh01(
+        observed_volume,
+        np.array([10.0, 20.0]),
+        azimuth_deg=az,
+        elevation_deg=np.array([1.5, 0.5]),
+        previous_volume=previous_volume,
+    )
+
+    expected_folds = np.array([[[1]], [[0]]], dtype=np.int16)
+    assert np.array_equal(res.velocity, truth_volume)
+    assert np.array_equal(res.folds, expected_folds)
+    assert res.metadata['valid_gates'] == 2
+    assert res.metadata['assigned_gates'] == 2
+    assert res.metadata['unresolved_gates'] == 0
+    assert res.metadata['fill_policy'] == 'descending_volume_reference_then_cleanup'

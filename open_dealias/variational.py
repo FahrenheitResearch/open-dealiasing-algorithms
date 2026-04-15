@@ -5,10 +5,13 @@ import warnings
 import numpy as np
 
 from ._core import as_float_array, fold_counts, gaussian_confidence, neighbor_stack, unfold_to_reference
+from ._rust_bridge import get_rust_backend
 from .region_graph import dealias_sweep_region_graph
 from .types import DealiasResult
 
 __all__ = ["dealias_sweep_variational"]
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 def _safe_nanmean(arr: np.ndarray, axis: int = 0) -> np.ndarray:
@@ -63,6 +66,30 @@ def dealias_sweep_variational(
     else:
         corrected = bootstrap.velocity.copy()
     corrected = np.where(valid, corrected, np.nan)
+
+    if _NATIVE_BACKEND is not None:
+        velocity, folds, confidence, metadata = _NATIVE_BACKEND.dealias_sweep_variational_refine(
+            obs,
+            corrected,
+            float(nyquist),
+            ref,
+            int(max_abs_fold),
+            float(neighbor_weight),
+            float(reference_weight),
+            float(smoothness_weight),
+            int(max_iterations),
+            bool(wrap_azimuth),
+        )
+        meta = dict(metadata)
+        meta["bootstrap_method"] = bootstrap.metadata.get("method")
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=ref,
+            metadata=meta,
+        )
+
     folds = fold_counts(corrected, obs, nyquist).astype(int)
 
     offsets = list(range(-max_abs_fold, max_abs_fold + 1))

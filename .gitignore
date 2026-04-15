@@ -10,3 +10,7 @@ js/dist/
 tmp_realdata/
 archive_data/
 examples/output/
+target/
+Cargo.lock
+open_dealias/_rust*.pyd
+open_dealias/_rust*.pyd~

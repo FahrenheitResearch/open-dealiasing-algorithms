@@ -3,8 +3,74 @@ from __future__ import annotations
 import numpy as np
 
 from ._core import combine_references, unfold_to_reference, wrap_to_nyquist
+from ._rust_bridge import get_rust_backend
 from .multipass import dealias_sweep_zw06
 from .types import DealiasResult, VadFit
+
+
+_NATIVE_BACKEND = get_rust_backend()
+_NATIVE_VAD_METHODS = ("estimate_uniform_wind_vad", "fit_vad", "vad_fit")
+_NATIVE_XU11_METHODS = ("dealias_sweep_xu11", "xu11")
+
+
+def _native_method(names: tuple[str, ...]):
+    backend = _NATIVE_BACKEND
+    if backend is None:
+        return None
+    for name in names:
+        method = getattr(backend, name, None)
+        if callable(method):
+            return method
+    return None
+
+
+def _coerce_vad_fit(result: object) -> VadFit:
+    if isinstance(result, VadFit):
+        return result
+    if hasattr(result, "u") and hasattr(result, "v") and hasattr(result, "offset") and hasattr(result, "rms") and hasattr(result, "iterations") and hasattr(result, "reference"):
+        return VadFit(
+            u=float(result.u),
+            v=float(result.v),
+            offset=float(result.offset),
+            rms=float(result.rms),
+            iterations=int(result.iterations),
+            reference=np.asarray(result.reference, dtype=float),
+        )
+    if isinstance(result, (tuple, list)) and len(result) >= 6:
+        u, v, offset, rms, iterations, reference = result[:6]
+        return VadFit(
+            u=float(u),
+            v=float(v),
+            offset=float(offset),
+            rms=float(rms),
+            iterations=int(iterations),
+            reference=np.asarray(reference, dtype=float),
+        )
+    raise TypeError("native VAD backend returned an unsupported result")
+
+
+def _coerce_dealias_result(result: object) -> DealiasResult:
+    if isinstance(result, DealiasResult):
+        return result
+    if hasattr(result, "velocity") and hasattr(result, "folds") and hasattr(result, "confidence") and hasattr(result, "reference") and hasattr(result, "metadata"):
+        return DealiasResult(
+            velocity=np.asarray(result.velocity, dtype=float),
+            folds=np.asarray(result.folds, dtype=np.int16),
+            confidence=np.asarray(result.confidence, dtype=float),
+            reference=None if result.reference is None else np.asarray(result.reference, dtype=float),
+            metadata=dict(result.metadata),
+        )
+    if isinstance(result, (tuple, list)) and len(result) >= 4:
+        velocity, folds, confidence, reference = result[:4]
+        metadata = dict(result[4]) if len(result) >= 5 and result[4] is not None else {}
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=None if reference is None else np.asarray(reference, dtype=float),
+            metadata=metadata,
+        )
+    raise TypeError("native Xu11 backend returned an unsupported result")
 
 
 def build_reference_from_uv(
@@ -27,7 +93,7 @@ def build_reference_from_uv(
     return np.repeat(radial[:, None], int(n_range), axis=1)
 
 
-def estimate_uniform_wind_vad(
+def _python_estimate_uniform_wind_vad(
     observed: np.ndarray,
     nyquist: float,
     azimuth_deg: np.ndarray,
@@ -121,7 +187,45 @@ def estimate_uniform_wind_vad(
     return VadFit(u=u, v=v, offset=offset, rms=float(rms), iterations=int(iteration), reference=reference)
 
 
-def dealias_sweep_xu11(
+def estimate_uniform_wind_vad(
+    observed: np.ndarray,
+    nyquist: float,
+    azimuth_deg: np.ndarray,
+    *,
+    elevation_deg: float = 0.0,
+    sign: float = 1.0,
+    max_iterations: int = 6,
+    trim_quantile: float = 0.85,
+    search_radius: float | None = None,
+) -> VadFit:
+    """Estimate a uniform-wind VAD anchor with torus-aware search plus refit."""
+    native = _native_method(_NATIVE_VAD_METHODS)
+    if native is not None:
+        return _coerce_vad_fit(
+            native(
+                np.asarray(observed, dtype=float),
+                float(nyquist),
+                np.asarray(azimuth_deg, dtype=float),
+                elevation_deg=float(elevation_deg),
+                sign=float(sign),
+                max_iterations=int(max_iterations),
+                trim_quantile=float(trim_quantile),
+                search_radius=None if search_radius is None else float(search_radius),
+            )
+        )
+    return _python_estimate_uniform_wind_vad(
+        observed,
+        nyquist,
+        azimuth_deg,
+        elevation_deg=elevation_deg,
+        sign=sign,
+        max_iterations=max_iterations,
+        trim_quantile=trim_quantile,
+        search_radius=search_radius,
+    )
+
+
+def _python_dealias_sweep_xu11(
     observed: np.ndarray,
     nyquist: float,
     azimuth_deg: np.ndarray,
@@ -161,8 +265,8 @@ def dealias_sweep_xu11(
                 'offset': fit.offset,
                 'vad_rms': fit.rms,
                 'vad_iterations': fit.iterations,
-            },
-        )
+        },
+    )
 
     result = dealias_sweep_zw06(obs, nyquist, reference=ref)
     result.reference = ref
@@ -176,3 +280,38 @@ def dealias_sweep_xu11(
         'vad_iterations': fit.iterations,
     })
     return result
+
+
+def dealias_sweep_xu11(
+    observed: np.ndarray,
+    nyquist: float,
+    azimuth_deg: np.ndarray,
+    *,
+    elevation_deg: float = 0.0,
+    external_reference: np.ndarray | None = None,
+    sign: float = 1.0,
+    refine_with_multipass: bool = True,
+) -> DealiasResult:
+    """Xu-style VAD-seeded dealiasing."""
+    native = _native_method(_NATIVE_XU11_METHODS)
+    if native is not None:
+        return _coerce_dealias_result(
+            native(
+                np.asarray(observed, dtype=float),
+                float(nyquist),
+                np.asarray(azimuth_deg, dtype=float),
+                elevation_deg=float(elevation_deg),
+                external_reference=None if external_reference is None else np.asarray(external_reference, dtype=float),
+                sign=float(sign),
+                refine_with_multipass=bool(refine_with_multipass),
+            )
+        )
+    return _python_dealias_sweep_xu11(
+        observed,
+        nyquist,
+        azimuth_deg,
+        elevation_deg=elevation_deg,
+        external_reference=external_reference,
+        sign=sign,
+        refine_with_multipass=refine_with_multipass,
+    )

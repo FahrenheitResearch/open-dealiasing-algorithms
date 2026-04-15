@@ -3,8 +3,11 @@ from __future__ import annotations
 import numpy as np
 
 from ._core import texture_3x3
+from ._rust_bridge import get_rust_backend
 
 __all__ = ["estimate_velocity_texture", "build_velocity_qc_mask", "apply_velocity_qc"]
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 def estimate_velocity_texture(
@@ -38,6 +41,22 @@ def build_velocity_qc_mask(
     vel = np.asarray(velocity, dtype=float)
     if vel.ndim != 2:
         raise ValueError("velocity must be 2D [azimuth, range]")
+
+    if _NATIVE_BACKEND is not None:
+        refl = None if reflectivity is None else np.asarray(reflectivity, dtype=float)
+        tex = None if texture is None else np.asarray(texture, dtype=float)
+        return np.asarray(
+            _NATIVE_BACKEND.build_velocity_qc_mask(
+                vel,
+                refl,
+                tex,
+                None if min_reflectivity is None else float(min_reflectivity),
+                None if max_texture is None else float(max_texture),
+                float(min_gate_fraction_in_ray),
+                bool(wrap_azimuth),
+            ),
+            dtype=bool,
+        )
 
     mask = np.isfinite(vel)
     if reflectivity is not None:

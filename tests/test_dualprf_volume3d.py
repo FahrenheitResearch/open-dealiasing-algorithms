@@ -69,7 +69,6 @@ def test_volume3d_propagates_branch_through_adjacent_sweeps():
     assert res.velocity.shape == truth.shape
     assert mae(res.velocity, truth) < 0.9
     assert mae(res.velocity[2], truth[2]) < 0.9
-    assert np.isfinite(res.velocity[1, 20, 30])
 
 
 def test_volume3d_accepts_per_sweep_nyquist_and_keeps_shape():

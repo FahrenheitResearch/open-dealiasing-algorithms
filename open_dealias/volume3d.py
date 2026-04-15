@@ -5,10 +5,14 @@ from typing import Iterable
 import numpy as np
 
 from ._core import combine_references, gaussian_confidence, unfold_to_reference
+from ._rust_bridge import get_rust_backend
 from .multipass import dealias_sweep_zw06
 from .types import DealiasResult
 
 __all__ = ['dealias_volume_3d']
+
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 def _resolve_nyquist(nyquist: float | np.ndarray, n_sweeps: int) -> np.ndarray:
@@ -135,6 +139,38 @@ def dealias_volume_3d(
         raise ValueError('reference_volume must match observed_volume shape')
 
     nyq = _resolve_nyquist(nyquist, obs.shape[0])
+
+    if _NATIVE_BACKEND is not None and hasattr(_NATIVE_BACKEND, 'dealias_volume_3d'):
+        native_result = _NATIVE_BACKEND.dealias_volume_3d(
+            obs,
+            nyq,
+            ref,
+            bool(wrap_azimuth),
+            int(max_iterations),
+        )
+        if isinstance(native_result, DealiasResult):
+            return native_result
+        values = tuple(native_result)
+        if len(values) == 5:
+            velocity, folds, confidence, ref_out, metadata = values
+        elif len(values) == 4:
+            velocity, folds, confidence, metadata = values
+            ref_out = ref
+        else:  # pragma: no cover - defensive against future API drift.
+            raise ValueError('native volume3d backend returned an unexpected result shape')
+        meta = dict(metadata)
+        meta.setdefault('paper_family', 'UNRAVEL-style-3D')
+        meta.setdefault('method', 'volume_3d_continuity')
+        meta.setdefault('wrap_azimuth', bool(wrap_azimuth))
+        meta.setdefault('max_iterations', int(max_iterations))
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
+            metadata=meta,
+        )
+
     corrected = np.full(obs.shape, np.nan, dtype=float)
     confidence = np.zeros(obs.shape, dtype=float)
     reference = np.full(obs.shape, np.nan, dtype=float)

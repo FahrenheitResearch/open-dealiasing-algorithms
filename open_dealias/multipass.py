@@ -13,6 +13,7 @@ from ._core import (
     texture_3x3,
     unfold_to_reference,
 )
+from ._rust_bridge import get_rust_backend
 from .types import DealiasResult
 
 
@@ -22,6 +23,8 @@ DEFAULT_PASSES: tuple[dict[str, float | int | bool], ...] = (
     {'min_neighbors': 1, 'max_mismatch_fraction': 1.10, 'reference_only': True},
 )
 
+_NATIVE_BACKEND = get_rust_backend()
+
 
 def _safe_nanmedian(stack: np.ndarray, axis: int = 0) -> np.ndarray:
     import warnings
@@ -29,6 +32,15 @@ def _safe_nanmedian(stack: np.ndarray, axis: int = 0) -> np.ndarray:
         warnings.simplefilter('ignore', category=RuntimeWarning)
         with np.errstate(all='ignore'):
             return np.nanmedian(stack, axis=axis)
+
+
+def _passes_match_default(passes: Sequence[dict[str, float | int | bool]]) -> bool:
+    if len(passes) != len(DEFAULT_PASSES):
+        return False
+    for left, right in zip(passes, DEFAULT_PASSES, strict=False):
+        if dict(left) != dict(right):
+            return False
+    return True
 
 
 def dealias_sweep_zw06(
@@ -58,6 +70,27 @@ def dealias_sweep_zw06(
     ref = None if reference is None else np.asarray(reference, dtype=float)
     if ref is not None and ref.shape != obs.shape:
         raise ValueError('reference must match observed shape')
+
+    if _NATIVE_BACKEND is not None and _passes_match_default(passes):
+        velocity, folds, confidence, ref_out, metadata = _NATIVE_BACKEND.dealias_sweep_zw06(
+            obs,
+            float(nyquist),
+            ref,
+            float(weak_threshold_fraction),
+            bool(wrap_azimuth),
+            int(max_iterations_per_pass),
+            bool(include_diagonals),
+            bool(recenter_without_reference),
+        )
+        meta = dict(metadata)
+        meta['passes'] = [dict(p) for p in passes]
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=np.asarray(ref_out, dtype=float),
+            metadata=meta,
+        )
 
     valid = np.isfinite(obs)
     corrected = np.full(obs.shape, np.nan, dtype=float)

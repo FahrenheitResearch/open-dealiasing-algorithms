@@ -16,6 +16,7 @@ from ._core import (
     texture_3x3,
     unfold_to_reference,
 )
+from ._rust_bridge import get_rust_backend
 from .types import DealiasResult
 
 
@@ -31,6 +32,9 @@ class _Region:
     area: int
     neighbors: set[int] = field(default_factory=set)
     boundary_weight: dict[int, int] = field(default_factory=dict)
+
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 def _safe_nanmedian(data: np.ndarray) -> float:
@@ -360,7 +364,7 @@ def _expand_region_solution(
     return corrected, confidence
 
 
-def dealias_sweep_region_graph(
+def _python_dealias_sweep_region_graph(
     observed: Iterable[float] | np.ndarray,
     nyquist: float,
     *,
@@ -442,4 +446,78 @@ def dealias_sweep_region_graph(
         confidence=confidence,
         reference=ref,
         metadata=metadata,
+    )
+
+
+def dealias_sweep_region_graph(
+    observed: Iterable[float] | np.ndarray,
+    nyquist: float,
+    *,
+    reference: np.ndarray | None = None,
+    block_shape: tuple[int, int] | None = None,
+    reference_weight: float = 0.75,
+    max_iterations: int = 6,
+    max_abs_fold: int = 8,
+    wrap_azimuth: bool = True,
+) -> DealiasResult:
+    """Sweep-wide region graph solver inspired by Py-ART's dynamic network family.
+
+    The sweep is partitioned into connected rectangular regions, each region gets a
+    fold offset by consensus with neighboring regions, and the offsets are merged
+    iteratively until the graph stabilizes.
+    """
+    obs = as_float_array(observed)
+    if obs.ndim != 2:
+        raise ValueError("observed must be 2D [azimuth, range]")
+    if nyquist <= 0:
+        raise ValueError("nyquist must be positive")
+
+    ref = None if reference is None else np.asarray(reference, dtype=float)
+    if ref is not None and ref.shape != obs.shape:
+        raise ValueError("reference must match observed shape")
+
+    if _NATIVE_BACKEND is not None and hasattr(_NATIVE_BACKEND, "dealias_sweep_region_graph"):
+        native_result = _NATIVE_BACKEND.dealias_sweep_region_graph(
+            obs,
+            float(nyquist),
+            ref,
+            None if block_shape is None else tuple(int(v) for v in block_shape),
+            float(reference_weight),
+            int(max_iterations),
+            int(max_abs_fold),
+            bool(wrap_azimuth),
+        )
+        if isinstance(native_result, DealiasResult):
+            return native_result
+        values = tuple(native_result)
+        if len(values) == 5:
+            velocity, folds, confidence, ref_out, metadata = values
+        elif len(values) == 4:
+            velocity, folds, confidence, metadata = values
+            ref_out = ref
+        else:  # pragma: no cover - defensive against future API drift.
+            raise ValueError("native region_graph backend returned an unexpected result shape")
+        meta = dict(metadata)
+        meta.setdefault("paper_family", "PyARTRegionGraphLite")
+        meta.setdefault("method", "region_graph_sweep")
+        meta.setdefault("merge_iterations", int(max_iterations))
+        meta.setdefault("wrap_azimuth", bool(wrap_azimuth))
+        meta.setdefault("block_shape", [int(v) for v in _choose_block_shape(obs.shape, block_shape)])
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
+            metadata=meta,
+        )
+
+    return _python_dealias_sweep_region_graph(
+        obs,
+        nyquist,
+        reference=ref,
+        block_shape=block_shape,
+        reference_weight=reference_weight,
+        max_iterations=max_iterations,
+        max_abs_fold=max_abs_fold,
+        wrap_azimuth=wrap_azimuth,
     )

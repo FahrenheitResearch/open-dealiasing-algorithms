@@ -5,9 +5,12 @@ from typing import Iterable
 import numpy as np
 
 from ._core import as_float_array, combine_references, fold_counts, gaussian_confidence, unfold_to_reference, wrap_to_nyquist
+from ._rust_bridge import get_rust_backend
 from .types import DealiasResult
 
 __all__ = ['dealias_dual_prf']
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 def _best_branch_against_partner(
@@ -82,7 +85,7 @@ def _best_branch_against_partner(
     return best_value, best_fold, best_gap
 
 
-def dealias_dual_prf(
+def _python_dealias_dual_prf(
     low_observed: Iterable[float] | np.ndarray,
     high_observed: Iterable[float] | np.ndarray,
     low_nyquist: float,
@@ -202,4 +205,44 @@ def dealias_dual_prf(
         confidence=confidence,
         reference=ref if ref is not None else combine_references(low_best, high_best),
         metadata=metadata,
+    )
+
+
+def dealias_dual_prf(
+    low_observed: Iterable[float] | np.ndarray,
+    high_observed: Iterable[float] | np.ndarray,
+    low_nyquist: float,
+    high_nyquist: float,
+    *,
+    reference: np.ndarray | None = None,
+    max_abs_fold: int = 32,
+) -> DealiasResult:
+    low = as_float_array(low_observed)
+    high = as_float_array(high_observed)
+    ref = None if reference is None else np.asarray(reference, dtype=float)
+
+    if _NATIVE_BACKEND is not None:
+        velocity, folds, confidence, ref_out, metadata = _NATIVE_BACKEND.dealias_dual_prf(
+            low,
+            high,
+            float(low_nyquist),
+            float(high_nyquist),
+            ref,
+            int(max_abs_fold),
+        )
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=np.asarray(ref_out, dtype=float),
+            metadata=dict(metadata),
+        )
+
+    return _python_dealias_dual_prf(
+        low,
+        high,
+        low_nyquist,
+        high_nyquist,
+        reference=ref,
+        max_abs_fold=max_abs_fold,
     )

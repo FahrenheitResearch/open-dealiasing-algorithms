@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "rust/open_dealias_core",
+    "rust/open_dealias_py",
+]
+resolver = "2"

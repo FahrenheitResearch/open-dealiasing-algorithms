@@ -15,7 +15,7 @@ A fair comparison should separate:
 
 Do not compare two algorithms as if they are pure unwrap functions if one also uses heavier QC, previous volumes, or multi-PRF-derived inputs.
 
-## 2. What to treat as “truth”
+## 2. What to treat as "truth"
 
 There is no single truth source for all cases. Use the strongest available option and say which one you used.
 
@@ -121,6 +121,7 @@ How strongly does performance depend on previous-volume state, soundings, or mod
 6. Include cold-start tests.
 7. Include parameter sensitivity sweeps for at least one threshold.
 8. Report runtime on the same hardware.
+9. If a method needs unavailable support data or would require reference leakage to run, mark it skipped rather than synthesizing inputs.
 
 ## 8. Useful qualitative review questions
 

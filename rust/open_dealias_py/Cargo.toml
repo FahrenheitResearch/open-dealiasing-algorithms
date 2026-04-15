@@ -1,0 +1,15 @@
+[package]
+name = "open-dealias-py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ndarray = "0.16"
+numpy = "0.23"
+open-dealias-core = { path = "../open_dealias_core" }
+pyo3 = { version = "0.23", features = ["extension-module"] }

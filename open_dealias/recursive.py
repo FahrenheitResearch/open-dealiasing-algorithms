@@ -7,6 +7,7 @@ import warnings
 import numpy as np
 
 from ._core import as_float_array, combine_references, fold_counts, gaussian_confidence, neighbor_stack, texture_3x3, unfold_to_reference
+from ._rust_bridge import get_rust_backend
 from .region_graph import (
     _Region,
     _expand_region_solution,
@@ -16,6 +17,8 @@ from .region_graph import (
     dealias_sweep_region_graph,
 )
 from .types import DealiasResult
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 @dataclass(slots=True)
@@ -397,7 +400,7 @@ def _solution_cost(candidate: np.ndarray, observed: np.ndarray, reference: np.nd
     return continuity + 0.35 * ref_cost
 
 
-def dealias_sweep_recursive(
+def _python_dealias_sweep_recursive(
     observed: Iterable[float] | np.ndarray,
     nyquist: float,
     *,
@@ -538,4 +541,76 @@ def dealias_sweep_recursive(
             "bootstrap_method": bootstrap.metadata.get("method"),
             "bootstrap_region_count": bootstrap.metadata.get("region_count"),
         },
+    )
+
+
+def dealias_sweep_recursive(
+    observed: Iterable[float] | np.ndarray,
+    nyquist: float,
+    *,
+    reference: np.ndarray | None = None,
+    max_depth: int = 5,
+    min_leaf_cells: int = 24,
+    split_texture_fraction: float = 0.60,
+    reference_weight: float = 0.70,
+    max_abs_fold: int = 8,
+    wrap_azimuth: bool = True,
+) -> DealiasResult:
+    """R2D2-style recursive sweep solver with hierarchical local refinement."""
+    obs = as_float_array(observed)
+    if obs.ndim != 2:
+        raise ValueError("observed must be 2D [azimuth, range]")
+    if nyquist <= 0:
+        raise ValueError("nyquist must be positive")
+
+    ref = None if reference is None else np.asarray(reference, dtype=float)
+    if ref is not None and ref.shape != obs.shape:
+        raise ValueError("reference must match observed shape")
+
+    if _NATIVE_BACKEND is not None and hasattr(_NATIVE_BACKEND, "dealias_sweep_recursive"):
+        native_result = _NATIVE_BACKEND.dealias_sweep_recursive(
+            obs,
+            float(nyquist),
+            ref,
+            int(max_depth),
+            int(min_leaf_cells),
+            float(split_texture_fraction),
+            float(reference_weight),
+            int(max_abs_fold),
+            bool(wrap_azimuth),
+        )
+        if isinstance(native_result, DealiasResult):
+            return native_result
+        values = tuple(native_result)
+        if len(values) == 5:
+            velocity, folds, confidence, ref_out, metadata = values
+        elif len(values) == 4:
+            velocity, folds, confidence, metadata = values
+            ref_out = ref
+        else:  # pragma: no cover - defensive against future API drift.
+            raise ValueError("native recursive backend returned an unexpected result shape")
+        meta = dict(metadata)
+        meta.setdefault("paper_family", "R2D2StyleRecursiveLite")
+        meta.setdefault("method", "recursive_region_refinement")
+        meta.setdefault("bootstrap_method", "region_graph_sweep")
+        meta.setdefault("max_depth", int(max_depth))
+        meta.setdefault("wrap_azimuth", bool(wrap_azimuth))
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
+            metadata=meta,
+        )
+
+    return _python_dealias_sweep_recursive(
+        obs,
+        nyquist,
+        reference=ref,
+        max_depth=max_depth,
+        min_leaf_cells=min_leaf_cells,
+        split_texture_fraction=split_texture_fraction,
+        reference_weight=reference_weight,
+        max_abs_fold=max_abs_fold,
+        wrap_azimuth=wrap_azimuth,
     )

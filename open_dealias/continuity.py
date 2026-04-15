@@ -5,7 +5,10 @@ from typing import Iterable
 import numpy as np
 
 from ._core import as_float_array, combine_references, fold_counts, gaussian_confidence, unfold_to_reference
+from ._rust_bridge import get_rust_backend
 from .types import DealiasResult
+
+_NATIVE_BACKEND = get_rust_backend()
 
 
 def _pick_seed(observed: np.ndarray, reference: np.ndarray | None = None) -> int | None:
@@ -99,6 +102,29 @@ def dealias_radial_es90(
     if ref is not None and ref.shape != obs.shape:
         raise ValueError('reference must match observed shape')
 
+    if _NATIVE_BACKEND is not None:
+        velocity, folds, confidence, ref_out, native_seed_index = _NATIVE_BACKEND.dealias_radial_es90(
+            obs,
+            float(nyquist),
+            ref,
+            None if seed_index is None else int(seed_index),
+            int(max_gap),
+            None if max_abs_step is None else float(max_abs_step),
+        )
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=np.asarray(ref_out, dtype=float),
+            metadata={
+                'paper': 'EiltsSmith1990',
+                'method': 'radial_continuity',
+                'seed_index': None if native_seed_index is None else int(native_seed_index),
+                'max_gap': int(max_gap),
+                'max_abs_step': None if max_abs_step is None else float(max_abs_step),
+            },
+        )
+
     corrected = np.full(obs.shape, np.nan, dtype=float)
     confidence = np.zeros(obs.shape, dtype=float)
 
@@ -150,6 +176,27 @@ def dealias_sweep_es90(
     ref = None if reference is None else np.asarray(reference, dtype=float)
     if ref is not None and ref.shape != obs.shape:
         raise ValueError('reference must match observed shape')
+
+    if _NATIVE_BACKEND is not None:
+        velocity, folds, confidence, ref_out = _NATIVE_BACKEND.dealias_sweep_es90(
+            obs,
+            float(nyquist),
+            ref,
+            int(max_gap),
+            None if max_abs_step is None else float(max_abs_step),
+        )
+        return DealiasResult(
+            velocity=np.asarray(velocity, dtype=float),
+            folds=np.asarray(folds, dtype=np.int16),
+            confidence=np.asarray(confidence, dtype=float),
+            reference=np.asarray(ref_out, dtype=float),
+            metadata={
+                'paper': 'EiltsSmith1990',
+                'method': 'sweep_radial_continuity',
+                'max_gap': int(max_gap),
+                'max_abs_step': None if max_abs_step is None else float(max_abs_step),
+            },
+        )
 
     corrected = np.full(obs.shape, np.nan, dtype=float)
     confidence = np.zeros(obs.shape, dtype=float)
