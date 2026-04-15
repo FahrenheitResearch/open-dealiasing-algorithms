@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run Python tests
+        run: pytest -q
+
+      - name: Run Python smoke demo
+        run: python examples/python_demo.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install JS dependencies
+        working-directory: js
+        run: npm install
+
+      - name: Run JS tests
+        working-directory: js
+        run: npm test
+
+      - name: Run JS smoke demo
+        run: node examples/js_demo.mjs

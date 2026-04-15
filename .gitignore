@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+*.egg-info/
+js/node_modules/
+js/dist/
+.cache/
+tmp_realdata/
+archive_data/
+examples/output/
