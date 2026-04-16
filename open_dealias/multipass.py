@@ -13,7 +13,8 @@ from ._core import (
     texture_3x3,
     unfold_to_reference,
 )
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .types import DealiasResult
 
 
@@ -71,8 +72,9 @@ def dealias_sweep_zw06(
     if ref is not None and ref.shape != obs.shape:
         raise ValueError('reference must match observed shape')
 
-    if _NATIVE_BACKEND is not None and _passes_match_default(passes):
-        velocity, folds, confidence, ref_out, metadata = _NATIVE_BACKEND.dealias_sweep_zw06(
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is not None and _passes_match_default(passes):
+        velocity, folds, confidence, ref_out, metadata = backend.dealias_sweep_zw06(
             obs,
             float(nyquist),
             ref,
@@ -84,12 +86,18 @@ def dealias_sweep_zw06(
         )
         meta = dict(metadata)
         meta['passes'] = [dict(p) for p in passes]
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
             folds=np.asarray(folds, dtype=np.int16),
             confidence=np.asarray(confidence, dtype=float),
             reference=np.asarray(ref_out, dtype=float),
             metadata=meta,
+            ),
+            obs,
+            source="2d_multipass",
+            parent="JingWiener1993+ZhangWang2006",
+            fill_policy=str(meta.get("fill_policy", "multipass_reference_then_cleanup")),
         )
 
     valid = np.isfinite(obs)
@@ -201,7 +209,8 @@ def dealias_sweep_zw06(
             confidence = confidence.copy()
     folds = fold_counts(corrected, obs, nyquist)
 
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=folds,
         confidence=confidence,
@@ -215,4 +224,9 @@ def dealias_sweep_zw06(
             'wrap_azimuth': bool(wrap_azimuth),
             'passes': [dict(p) for p in passes],
         },
+        ),
+        obs,
+        source="2d_multipass",
+        parent="JingWiener1993+ZhangWang2006",
+        fill_policy="multipass_reference_then_cleanup" if ref is not None else "multipass_neighbor_then_cleanup",
     )

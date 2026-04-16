@@ -110,7 +110,10 @@ def test_dealias_sweep_xu11_dispatches_to_native_backend(monkeypatch) -> None:
     np.testing.assert_array_equal(result.folds, folds)
     np.testing.assert_allclose(result.confidence, confidence)
     np.testing.assert_allclose(result.reference, reference)
-    assert result.metadata == metadata
+    for key, value in metadata.items():
+        assert result.metadata[key] == value
+    assert result.metadata["valid_gates"] == int(np.isfinite(observed).sum())
+    assert result.metadata["unresolved_gates"] == 0
 
 
 def test_python_fallbacks_remain_available_without_native_backend(monkeypatch) -> None:

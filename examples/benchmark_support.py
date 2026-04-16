@@ -7,6 +7,7 @@ import time
 import numpy as np
 
 from open_dealias import dealias_sweep_zw06
+from open_dealias._rust_bridge import backend_policy, get_backend_policy, resolve_rust_backend
 
 
 def mae(a: np.ndarray, b: np.ndarray) -> float:
@@ -35,6 +36,7 @@ def record_scored_result(
     runtime_s: float,
     *,
     metadata: dict[str, object] | None = None,
+    reference_name: str = "reference",
 ) -> dict[str, object]:
     return {
         "name": name,
@@ -42,6 +44,10 @@ def record_scored_result(
         "runtime_s": float(runtime_s),
         "changed_gates": changed_gates(candidate, observed),
         "unresolved_fraction": unresolved_fraction(candidate, observed),
+        "resolved_fraction": 1.0 - unresolved_fraction(candidate, observed),
+        "reference_name": str(reference_name),
+        "metric_scope": "reference_consistency",
+        "mae_vs_reference": mae(candidate, reference),
         "mae_vs_pyart": mae(candidate, reference),
         "metadata": {} if metadata is None else dict(metadata),
     }
@@ -123,6 +129,23 @@ def compare_dealias_results(native: Any, python: Any) -> dict[str, object]:
         payload["reference_mae"] = mae(native_reference, python_reference)
         payload["reference_max_abs_diff"] = safe_max_abs_diff(native_reference, python_reference)
 
+    native_state = getattr(native, "result_state", None)
+    python_state = getattr(python, "result_state", None)
+    native_resolved = None if native_state is None else getattr(native_state, "resolved_mask", None)
+    python_resolved = None if python_state is None else getattr(python_state, "resolved_mask", None)
+    if native_resolved is not None and python_resolved is not None:
+        native_resolved = np.asarray(native_resolved, dtype=bool)
+        python_resolved = np.asarray(python_resolved, dtype=bool)
+        payload["resolved_mask_equal"] = bool(np.array_equal(native_resolved, python_resolved))
+        payload["resolved_mask_mismatch_count"] = int(np.count_nonzero(native_resolved != python_resolved))
+
+    native_provenance = None if native_state is None else getattr(native_state, "provenance", None)
+    python_provenance = None if python_state is None else getattr(python_state, "provenance", None)
+    if native_provenance is not None and python_provenance is not None:
+        payload["provenance_equal"] = bool(
+            np.array_equal(np.asarray(native_provenance), np.asarray(python_provenance))
+        )
+
     return payload
 
 
@@ -137,33 +160,62 @@ def run_solver_pair(
     solver_name: str,
     *args: object,
     backend_attr: str = "_NATIVE_BACKEND",
+    backend_method: str | None = None,
+    repeats: int = 3,
+    warmup: int = 1,
     **kwargs: object,
 ) -> dict[str, object]:
     solver = getattr(module, solver_name)
+    baseline_policy = get_backend_policy()
+    original_backend = getattr(module, backend_attr) if hasattr(module, backend_attr) else None
 
-    public_start = time.perf_counter()
-    public_result = solver(*args, **kwargs)
-    public_runtime_s = time.perf_counter() - public_start
+    def _timed_call(policy_name: str) -> tuple[object, float]:
+        result = None
+        with backend_policy(policy_name):
+            if hasattr(module, backend_attr):
+                if policy_name == "python":
+                    setattr(module, backend_attr, None)
+                else:
+                    setattr(module, backend_attr, original_backend)
+            for _ in range(max(0, int(warmup))):
+                result = solver(*args, **kwargs)
+            samples: list[float] = []
+            for _ in range(max(1, int(repeats))):
+                start = time.perf_counter()
+                result = solver(*args, **kwargs)
+                samples.append(time.perf_counter() - start)
+        if hasattr(module, backend_attr):
+            setattr(module, backend_attr, original_backend)
+        return result, float(np.median(np.asarray(samples, dtype=float)))
 
-    python_result = public_result
-    python_runtime_s = public_runtime_s
+    public_result, public_runtime_s = _timed_call("auto")
+    python_result, python_runtime_s = _timed_call("python")
+
     backend_available = False
 
     if hasattr(module, backend_attr):
-        backend = getattr(module, backend_attr)
-        backend_available = backend is not None
-        setattr(module, backend_attr, None)
-        try:
-            python_start = time.perf_counter()
-            python_result = solver(*args, **kwargs)
-            python_runtime_s = time.perf_counter() - python_start
-        finally:
-            setattr(module, backend_attr, backend)
+        backend = original_backend
+        with backend_policy("auto"):
+            resolved_backend = resolve_rust_backend(backend)
+        if resolved_backend is not None:
+            method_name = solver_name if backend_method is None else backend_method
+            method = getattr(resolved_backend, method_name, None)
+            backend_available = callable(method)
 
     return {
         "public_result": public_result,
         "public_runtime_s": float(public_runtime_s),
         "python_result": python_result,
         "python_runtime_s": float(python_runtime_s),
+        "python_policy_result": python_result,
+        "python_policy_runtime_s": float(python_runtime_s),
         "backend_available": backend_available,
+        "native_acceleration_available": backend_available,
+        "initial_policy": baseline_policy,
+        "public_policy": "auto",
+        "python_policy": "python",
+        "comparison_mode": "prepared_solver_call_auto_vs_transitive_python_policy",
+        "comparison_scope": "prepared_solver_call",
+        "repeats": int(max(1, repeats)),
+        "warmup": int(max(0, warmup)),
     }

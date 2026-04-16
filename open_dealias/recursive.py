@@ -7,7 +7,8 @@ import warnings
 import numpy as np
 
 from ._core import as_float_array, combine_references, fold_counts, gaussian_confidence, neighbor_stack, texture_3x3, unfold_to_reference
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .region_graph import (
     _Region,
     _expand_region_solution,
@@ -524,7 +525,8 @@ def _python_dealias_sweep_recursive(
     else:
         method = "recursive_region_refinement"
 
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=folds,
         confidence=confidence,
@@ -541,6 +543,12 @@ def _python_dealias_sweep_recursive(
             "bootstrap_method": bootstrap.metadata.get("method"),
             "bootstrap_region_count": bootstrap.metadata.get("region_count"),
         },
+        ),
+        obs,
+        source=method,
+        parent="R2D2StyleRecursiveLite",
+        fill_policy="recursive_region_refinement",
+        notes=(f"bootstrap_method={bootstrap.metadata.get('method')}",),
     )
 
 
@@ -567,8 +575,9 @@ def dealias_sweep_recursive(
     if ref is not None and ref.shape != obs.shape:
         raise ValueError("reference must match observed shape")
 
-    if _NATIVE_BACKEND is not None and hasattr(_NATIVE_BACKEND, "dealias_sweep_recursive"):
-        native_result = _NATIVE_BACKEND.dealias_sweep_recursive(
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is not None and hasattr(backend, "dealias_sweep_recursive"):
+        native_result = backend.dealias_sweep_recursive(
             obs,
             float(nyquist),
             ref,
@@ -595,12 +604,18 @@ def dealias_sweep_recursive(
         meta.setdefault("bootstrap_method", "region_graph_sweep")
         meta.setdefault("max_depth", int(max_depth))
         meta.setdefault("wrap_azimuth", bool(wrap_azimuth))
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
             folds=np.asarray(folds, dtype=np.int16),
             confidence=np.asarray(confidence, dtype=float),
             reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
             metadata=meta,
+            ),
+            obs,
+            source="recursive_region_refinement",
+            parent="R2D2StyleRecursiveLite",
+            fill_policy=str(meta.get("fill_policy", "recursive_region_refinement")),
         )
 
     return _python_dealias_sweep_recursive(

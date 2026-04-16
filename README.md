@@ -28,34 +28,47 @@ closed-source products.
 
 The current Python package, `open_dealias`, exposes paper-mapped reference
 implementations for the main public families that kept recurring across the
-uploaded summaries and public references:
+uploaded summaries and public references. The names below are family labels,
+not claims that each function is a standalone, paper-faithful solver.
+
+Core solvers and core solver families:
 
 - `dealias_radial_es90`
   Eilts and Smith style radial continuity / local-environment logic
 - `dealias_sweep_zw06`
   Jing and Wiener plus Zhang and Wang style sweep-wide 2D continuity
-- `dealias_sweep_xu11`
-  Xu style VAD-seeded dealiasing
-- `dealias_sweep_jh01`
-  James and Houze style temporal / 4DD-assisted sweep dealiasing
-- `dealias_volume_jh01`
-  a compact descending-elevation volume extension
 - `dealias_sweep_region_graph`
   Py-ART-style dynamic-network / region-graph sweep solver
 - `dealias_sweep_recursive`
   R2D2-style recursive region refinement
 - `dealias_dual_prf`
   dual-PRF / staggered-PRT paired branch search
-- `dealias_volume_3d`
-  UNRAVEL-style modular 3D continuity
 - `dealias_sweep_variational`
   variational / global coordinate-descent branch solver
-- `dealias_sweep_ml`
-  lightweight ML-assisted branch predictor with variational refinement
 
-These are not claims of bit-for-bit parity with any vendor or government
-production chain. They are compact, public, implementation-oriented versions of
-the best-supported public method families.
+Anchor and refinement compositions:
+
+- `dealias_sweep_xu11`
+  Xu-style VAD-seeded composition: fit a background wind, unwrap toward it,
+  then optionally refine with multipass continuity
+- `dealias_sweep_jh01`
+  James and Houze style temporal composition for a sweep
+- `dealias_volume_jh01`
+  descending-elevation volume composition built around temporal anchors
+- `dealias_volume_3d`
+  UNRAVEL-style multi-sweep composition built from sweep-level continuity
+- `dealias_sweep_ml`
+  lightweight ML-assisted branch predictor with optional refinement
+
+These are compact, public, implementation-oriented versions of the best
+supported public method families. They are not claims of bit-for-bit parity
+with any vendor or government production chain, and several of them deliberately
+compose a seed or cleanup step around a smaller core solver.
+
+Every `DealiasResult` now also carries a `result_state` summary with resolved /
+unresolved counts, coverage, fill policy, and lightweight provenance metadata.
+That is still a conservative reference-layer reporting model, not a calibrated
+operational uncertainty product.
 
 ## Public grounding
 
@@ -153,11 +166,12 @@ pip install -e .[dev]
 ```
 
 That editable install now builds the Rust extension when a Rust toolchain is
-available. The current Rust-backed path covers the speed-relevant solver stack:
-the lowest-level hot-path helpers in `open_dealias._core`, QC mask
-construction, `es90`, `zw06`, `xu11`, `jh01` sweep and volume modes,
-`region_graph`, `recursive`, variational refinement, `dual_prf`, `volume_3d`,
-and `ml`. I/O, plotting, archive utilities, and some glue code remain Python.
+available. "Rust-backed" currently means the native extension can replace the
+lowest-level hot-path helpers in `open_dealias._core` and any public solver
+entry point that explicitly dispatches to it. Higher-level composition,
+benchmark orchestration, I/O, plotting, and fallback glue remain Python. In
+practice, that means some solver families are partly native-backed and some are
+still fully Python-composed today.
 
 For real Level II archive access:
 
@@ -215,32 +229,39 @@ The plotting demos write PNGs into `examples/output/`.
 
 ## Rust backend
 
-This repo now includes a substantial Rust migration under `rust/`:
+This repo now includes a Rust migration under `rust/`:
 
 - `rust/open_dealias_core`
-  pure Rust implementations of `wrap_to_nyquist`, `fold_counts`,
-  `unfold_to_reference`, `shift2d`, `shift3d`, `neighbor_stack`,
-  `texture_3x3`, the QC mask builder, `es90`, `zw06`, `xu11`, `jh01`
-  sweep and volume solvers, `region_graph`, `recursive`, variational
-  refinement, `dual_prf`, `volume_3d`, and `ml`
+  pure Rust implementations of the low-level array helpers and the solver
+  entry points that have been ported so far
 - `rust/open_dealias_py`
-  a PyO3 extension that exposes those helpers and Rust-backed solver entry
-  points to Python
+  a PyO3 extension that exposes native-backed helpers and solver entry points
+  to Python
 - `open_dealias/_rust_bridge.py`
   runtime detection of the native extension
 
-The algorithm hot path is now native-backed, while real-data I/O, examples,
-plotting, and fallback orchestration stay in Python.
+The exact native coverage is intentionally described at the function level in
+the Python modules and tests. Some solver families are native-backed end to
+end, others still call native helpers from Python composition, and others are
+still pure Python.
 
-For a current end-to-end speed check on a real tornado case:
+For a current prepared solver-stack speed check on a real tornado case:
 
 ```bash
 python examples/moore_fullscan_speed_report.py
 ```
 
-The checked Moore-case report in `examples/output/` measures the native-backed
-stack on `KTLX20130520_200356_V06.gz` at `83.335s` for the pure-Python baseline
-versus `41.523s` for the current package path, or about `2.01x` faster overall.
+For a faster iteration path while keeping the measurement honest:
+
+```bash
+python examples/moore_fullscan_speed_report.py --skip-volume --repeats 1 --warmup 0
+```
+
+The checked Moore-case report in `examples/output/` is a single-case regression
+signal on `KTLX20130520_200356_V06.gz`. It times prepared solver entrypoints
+under package-wide `auto` and package-wide `python` policy, so it is useful for
+native-vs-fallback regression and not a full archive-to-product wall-clock
+benchmark for the full space of storm modes, QC settings, or scan strategies.
 
 ## Real radar data
 
@@ -267,7 +288,7 @@ For a specific archive time:
 python examples/nexrad_level2_demo.py --radar KLOT --time 2026-04-15T15:33:00Z
 ```
 
-For the fixed proof benchmark used in this repo:
+For the real-data reference-consistency benchmark used in this repo:
 
 ```bash
 python examples/klot_same_scan_benchmark.py
@@ -298,9 +319,13 @@ This is a strong open baseline, not a finished operational stack. It still lacks
 
 - real archived Level II benchmark manifests,
 - a real ingest/output layer for radar formats,
-- explicit unresolved-mask and QC pipelines,
+- stronger unresolved-mask policies and richer QC pipelines beyond the current first-class `result_state` reporting,
 - CI-backed comparison notebooks and figures,
 - WASM / JS bindings on top of the Rust core.
+
+Several high-level solvers also still favor "fill the field" behavior over a
+fully conservative unresolved-state model. That is a design choice in this repo
+today, not a claim that the unresolved problem is solved.
 
 ## Provenance
 

@@ -3,18 +3,19 @@ from __future__ import annotations
 import numpy as np
 
 from ._core import combine_references, unfold_to_reference, wrap_to_nyquist
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .multipass import dealias_sweep_zw06
 from .types import DealiasResult, VadFit
 
 
 _NATIVE_BACKEND = get_rust_backend()
-_NATIVE_VAD_METHODS = ("estimate_uniform_wind_vad", "fit_vad", "vad_fit")
-_NATIVE_XU11_METHODS = ("dealias_sweep_xu11", "xu11")
+_NATIVE_VAD_METHODS = ("estimate_uniform_wind_vad",)
+_NATIVE_XU11_METHODS = ("dealias_sweep_xu11",)
 
 
 def _native_method(names: tuple[str, ...]):
-    backend = _NATIVE_BACKEND
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
     if backend is None:
         return None
     for name in names:
@@ -27,15 +28,6 @@ def _native_method(names: tuple[str, ...]):
 def _coerce_vad_fit(result: object) -> VadFit:
     if isinstance(result, VadFit):
         return result
-    if hasattr(result, "u") and hasattr(result, "v") and hasattr(result, "offset") and hasattr(result, "rms") and hasattr(result, "iterations") and hasattr(result, "reference"):
-        return VadFit(
-            u=float(result.u),
-            v=float(result.v),
-            offset=float(result.offset),
-            rms=float(result.rms),
-            iterations=int(result.iterations),
-            reference=np.asarray(result.reference, dtype=float),
-        )
     if isinstance(result, (tuple, list)) and len(result) >= 6:
         u, v, offset, rms, iterations, reference = result[:6]
         return VadFit(
@@ -52,14 +44,6 @@ def _coerce_vad_fit(result: object) -> VadFit:
 def _coerce_dealias_result(result: object) -> DealiasResult:
     if isinstance(result, DealiasResult):
         return result
-    if hasattr(result, "velocity") and hasattr(result, "folds") and hasattr(result, "confidence") and hasattr(result, "reference") and hasattr(result, "metadata"):
-        return DealiasResult(
-            velocity=np.asarray(result.velocity, dtype=float),
-            folds=np.asarray(result.folds, dtype=np.int16),
-            confidence=np.asarray(result.confidence, dtype=float),
-            reference=None if result.reference is None else np.asarray(result.reference, dtype=float),
-            metadata=dict(result.metadata),
-        )
     if isinstance(result, (tuple, list)) and len(result) >= 4:
         velocity, folds, confidence, reference = result[:4]
         metadata = dict(result[4]) if len(result) >= 5 and result[4] is not None else {}
@@ -252,21 +236,27 @@ def _python_dealias_sweep_xu11(
         first_guess = unfold_to_reference(obs, ref, nyquist)
         confidence = np.where(np.isfinite(first_guess), 0.80, 0.0)
         from ._core import fold_counts
-        return DealiasResult(
-            velocity=first_guess,
-            folds=fold_counts(first_guess, obs, nyquist),
-            confidence=confidence,
-            reference=ref,
-            metadata={
-                'paper_family': 'Xu2011',
-                'method': 'vad_reference_only',
-                'u': fit.u,
-                'v': fit.v,
-                'offset': fit.offset,
-                'vad_rms': fit.rms,
-                'vad_iterations': fit.iterations,
-        },
-    )
+        return attach_result_state_from_fields(
+            DealiasResult(
+                velocity=first_guess,
+                folds=fold_counts(first_guess, obs, nyquist),
+                confidence=confidence,
+                reference=ref,
+                metadata={
+                    'paper_family': 'Xu2011',
+                    'method': 'vad_reference_only',
+                    'u': fit.u,
+                    'v': fit.v,
+                    'offset': fit.offset,
+                    'vad_rms': fit.rms,
+                    'vad_iterations': fit.iterations,
+                },
+            ),
+            obs,
+            source="vad_reference_only",
+            parent="Xu2011",
+            fill_policy="vad_reference_only",
+        )
 
     result = dealias_sweep_zw06(obs, nyquist, reference=ref)
     result.reference = ref
@@ -279,7 +269,13 @@ def _python_dealias_sweep_xu11(
         'vad_rms': fit.rms,
         'vad_iterations': fit.iterations,
     })
-    return result
+    return attach_result_state_from_fields(
+        result,
+        obs,
+        source=str(result.metadata.get('method', 'vad_seeded_multipass')),
+        parent=str(result.metadata.get('paper_family', 'Xu2011+ZhangWang2006')),
+        fill_policy='vad_reference_then_multipass_cleanup',
+    )
 
 
 def dealias_sweep_xu11(
@@ -295,9 +291,10 @@ def dealias_sweep_xu11(
     """Xu-style VAD-seeded dealiasing."""
     native = _native_method(_NATIVE_XU11_METHODS)
     if native is not None:
-        return _coerce_dealias_result(
+        obs = np.asarray(observed, dtype=float)
+        native_result = _coerce_dealias_result(
             native(
-                np.asarray(observed, dtype=float),
+                obs,
                 float(nyquist),
                 np.asarray(azimuth_deg, dtype=float),
                 elevation_deg=float(elevation_deg),
@@ -305,6 +302,13 @@ def dealias_sweep_xu11(
                 sign=float(sign),
                 refine_with_multipass=bool(refine_with_multipass),
             )
+        )
+        return attach_result_state_from_fields(
+            native_result,
+            obs,
+            source=str(native_result.metadata.get('method', 'vad_seeded_multipass')),
+            parent=str(native_result.metadata.get('paper_family', 'Xu2011')),
+            fill_policy='vad_reference_then_multipass_cleanup' if refine_with_multipass else 'vad_reference_only',
         )
     return _python_dealias_sweep_xu11(
         observed,

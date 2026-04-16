@@ -5,8 +5,11 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python-rust:
     runs-on: ubuntu-latest
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      OPEN_DEALIAS_BACKEND: native
 
     steps:
       - uses: actions/checkout@v4
@@ -15,16 +18,46 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            rust/open_dealias_core
+            rust/open_dealias_py
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
-      - name: Run Python tests
+      - name: Verify native backend import
+        run: |
+          python - <<'PY'
+          from open_dealias._rust_bridge import get_rust_backend, get_backend_policy
+          backend = get_rust_backend()
+          assert backend is not None, "Rust extension failed to build or import"
+          print("backend_policy=", get_backend_policy())
+          print("rust_backend_module=", backend.__name__)
+          PY
+
+      - name: Run Rust unit tests
+        run: cargo test --workspace --locked
+
+      - name: Run Python tests with native backend required
         run: pytest -q
 
       - name: Run Python smoke demo
         run: python examples/python_demo.py
+
+  js:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:

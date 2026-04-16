@@ -15,6 +15,17 @@ A fair comparison should separate:
 
 Do not compare two algorithms as if they are pure unwrap functions if one also uses heavier QC, previous volumes, or multi-PRF-derived inputs.
 
+Also distinguish the solver role:
+
+- core solver: directly chooses fold counts from the current sweep or volume,
+- anchor provider: supplies a reference field but does not itself resolve the full sweep,
+- refinement/cleanup pass: adjusts an already-bootstrapped field,
+- hybrid composition: combines several of the above.
+
+That distinction matters because a hybrid can be very useful operationally while
+still being a poor basis for claiming that one "solver" is universally better
+than another.
+
 ## 2. What to treat as "truth"
 
 There is no single truth source for all cases. Use the strongest available option and say which one you used.
@@ -58,6 +69,9 @@ Measure whether strong but real gradients are preserved or falsely smoothed away
 ### Unresolved-gate fraction
 
 A conservative algorithm may leave ambiguous gates blank. This should be reported, not hidden.
+
+If a solver always fills every gate, say so. If it only fills gates after a
+cleanup or fallback pass, report that separately from the main solver output.
 
 ### Failure containment
 
@@ -122,6 +136,7 @@ How strongly does performance depend on previous-volume state, soundings, or mod
 7. Include parameter sensitivity sweeps for at least one threshold.
 8. Report runtime on the same hardware.
 9. If a method needs unavailable support data or would require reference leakage to run, mark it skipped rather than synthesizing inputs.
+10. Label each run as `core`, `anchor-assisted`, `cleanup-assisted`, or `hybrid` so the results stay comparable.
 
 ## 8. Useful qualitative review questions
 
@@ -163,6 +178,8 @@ A good evaluation acknowledges these cases instead of pretending every gate has 
 - Do not compare algorithms with different QC masks and then attribute all differences to the unwrap logic.
 - Do not hide unresolved gates by interpolating them away before scoring.
 - Do not evaluate only one photogenic case.
+- Do not describe a composition as a pure solver if it bootstraps from another method.
+- Do not treat a single-case speed or accuracy check as a general benchmark unless you explicitly say it is one.
 
 ## 12. Bottom line
 

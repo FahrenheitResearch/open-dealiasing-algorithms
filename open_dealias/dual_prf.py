@@ -5,7 +5,8 @@ from typing import Iterable
 import numpy as np
 
 from ._core import as_float_array, combine_references, fold_counts, gaussian_confidence, unfold_to_reference, wrap_to_nyquist
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .types import DealiasResult
 
 __all__ = ['dealias_dual_prf']
@@ -199,12 +200,19 @@ def _python_dealias_dual_prf(
         'max_pair_gap': float(np.nanmax(pair_gap_full)) if np.any(np.isfinite(pair_gap_full)) else float('nan'),
     }
 
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=combined,
         folds=folds,
         confidence=confidence,
         reference=ref if ref is not None else combine_references(low_best, high_best),
         metadata=metadata,
+        ),
+        low,
+        source="dual_prf_branch_search",
+        parent="DualPRF",
+        fill_policy="paired_branch_search",
+        valid_mask=np.isfinite(low) | np.isfinite(high),
     )
 
 
@@ -221,8 +229,9 @@ def dealias_dual_prf(
     high = as_float_array(high_observed)
     ref = None if reference is None else np.asarray(reference, dtype=float)
 
-    if _NATIVE_BACKEND is not None:
-        velocity, folds, confidence, ref_out, metadata = _NATIVE_BACKEND.dealias_dual_prf(
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is not None:
+        velocity, folds, confidence, ref_out, metadata = backend.dealias_dual_prf(
             low,
             high,
             float(low_nyquist),
@@ -230,12 +239,19 @@ def dealias_dual_prf(
             ref,
             int(max_abs_fold),
         )
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
             folds=np.asarray(folds, dtype=np.int16),
             confidence=np.asarray(confidence, dtype=float),
             reference=np.asarray(ref_out, dtype=float),
             metadata=dict(metadata),
+            ),
+            low,
+            source="dual_prf_branch_search",
+            parent="DualPRF",
+            fill_policy="paired_branch_search",
+            valid_mask=np.isfinite(low) | np.isfinite(high),
         )
 
     return _python_dealias_dual_prf(

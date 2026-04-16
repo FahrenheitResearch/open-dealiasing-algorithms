@@ -22,6 +22,7 @@ from .nexrad import (
 )
 from .palette import PalColorTable, PaletteStop, load_pal_table
 from .qc import apply_velocity_qc, build_velocity_qc_mask, estimate_velocity_texture
+from .result_state import ResultProvenance, ResultState, ResultStatus, attach_result_state
 from .recursive import dealias_sweep_recursive
 from .region_graph import dealias_sweep_region_graph
 from .types import DealiasResult, RadarSweep, VadFit
@@ -50,6 +51,10 @@ __all__ = [
     'PaletteStop',
     'PalColorTable',
     'load_pal_table',
+    'ResultStatus',
+    'ResultProvenance',
+    'ResultState',
+    'attach_result_state',
     'estimate_velocity_texture',
     'build_velocity_qc_mask',
     'apply_velocity_qc',

@@ -5,7 +5,8 @@ from typing import Iterable
 import numpy as np
 
 from ._core import combine_references, gaussian_confidence, unfold_to_reference
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .multipass import dealias_sweep_zw06
 from .types import DealiasResult
 
@@ -140,8 +141,9 @@ def dealias_volume_3d(
 
     nyq = _resolve_nyquist(nyquist, obs.shape[0])
 
-    if _NATIVE_BACKEND is not None and hasattr(_NATIVE_BACKEND, 'dealias_volume_3d'):
-        native_result = _NATIVE_BACKEND.dealias_volume_3d(
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is not None and hasattr(backend, 'dealias_volume_3d'):
+        native_result = backend.dealias_volume_3d(
             obs,
             nyq,
             ref,
@@ -163,12 +165,18 @@ def dealias_volume_3d(
         meta.setdefault('method', 'volume_3d_continuity')
         meta.setdefault('wrap_azimuth', bool(wrap_azimuth))
         meta.setdefault('max_iterations', int(max_iterations))
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
             folds=np.asarray(folds, dtype=np.int16),
             confidence=np.asarray(confidence, dtype=float),
             reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
             metadata=meta,
+            ),
+            obs,
+            source="volume_3d_continuity",
+            parent="UNRAVEL-style-3D",
+            fill_policy=str(meta.get("fill_policy", "volume_reference_then_cleanup")),
         )
 
     corrected = np.full(obs.shape, np.nan, dtype=float)
@@ -233,7 +241,8 @@ def dealias_volume_3d(
         )
 
     folds = _fold_counts_volume(corrected, obs, nyq)
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=folds,
         confidence=confidence,
@@ -247,4 +256,9 @@ def dealias_volume_3d(
             'sweep_order': order,
             'per_sweep': per_sweep_meta,
         },
+        ),
+        obs,
+        source="volume_3d_continuity",
+        parent="UNRAVEL-style-3D",
+        fill_policy="volume_reference_then_cleanup",
     )

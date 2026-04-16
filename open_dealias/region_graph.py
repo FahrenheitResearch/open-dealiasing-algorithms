@@ -16,7 +16,8 @@ from ._core import (
     texture_3x3,
     unfold_to_reference,
 )
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .types import DealiasResult
 
 
@@ -393,7 +394,8 @@ def _python_dealias_sweep_region_graph(
 
     valid = np.isfinite(obs)
     if not np.any(valid):
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.full(obs.shape, np.nan, dtype=float),
             folds=np.zeros(obs.shape, dtype=np.int16),
             confidence=np.zeros(obs.shape, dtype=float),
@@ -404,6 +406,11 @@ def _python_dealias_sweep_region_graph(
                 "region_count": 0,
                 "merge_iterations": 0,
             },
+            ),
+            obs,
+            source="region_graph_sweep",
+            parent="PyARTRegionGraphLite",
+            fill_policy="region_graph_consensus",
         )
 
     regions, block_ids = _build_regions(obs, reference=ref, block_shape=block_shape, wrap_azimuth=wrap_azimuth)
@@ -440,12 +447,18 @@ def _python_dealias_sweep_region_graph(
         "regions_with_reference": int(sum(np.isfinite(_region_mean(ref, r.row0, r.row1, r.col0, r.col1)) for r in regions)) if ref is not None else 0,
         "block_grid_shape": [int(v) for v in block_ids.shape],
     }
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=folds,
         confidence=confidence,
         reference=ref,
         metadata=metadata,
+        ),
+        obs,
+        source="region_graph_sweep",
+        parent="PyARTRegionGraphLite",
+        fill_policy="region_graph_consensus",
     )
 
 
@@ -476,8 +489,9 @@ def dealias_sweep_region_graph(
     if ref is not None and ref.shape != obs.shape:
         raise ValueError("reference must match observed shape")
 
-    if _NATIVE_BACKEND is not None and hasattr(_NATIVE_BACKEND, "dealias_sweep_region_graph"):
-        native_result = _NATIVE_BACKEND.dealias_sweep_region_graph(
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is not None and hasattr(backend, "dealias_sweep_region_graph"):
+        native_result = backend.dealias_sweep_region_graph(
             obs,
             float(nyquist),
             ref,
@@ -503,12 +517,18 @@ def dealias_sweep_region_graph(
         meta.setdefault("merge_iterations", int(max_iterations))
         meta.setdefault("wrap_azimuth", bool(wrap_azimuth))
         meta.setdefault("block_shape", [int(v) for v in _choose_block_shape(obs.shape, block_shape)])
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
             folds=np.asarray(folds, dtype=np.int16),
             confidence=np.asarray(confidence, dtype=float),
             reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
             metadata=meta,
+            ),
+            obs,
+            source="region_graph_sweep",
+            parent="PyARTRegionGraphLite",
+            fill_policy=str(meta.get("fill_policy", "region_graph_consensus")),
         )
 
     return _python_dealias_sweep_region_graph(

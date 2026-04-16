@@ -17,6 +17,7 @@ from examples.benchmark_support import (
     run_solver_pair,
     unresolved_fraction,
 )
+from open_dealias._rust_bridge import get_backend_policy, resolve_rust_backend
 
 
 def test_record_skipped_result_marks_unavailable_methods():
@@ -36,6 +37,10 @@ def test_record_scored_result_uses_open_metrics():
     assert entry["status"] == "computed"
     assert entry["changed_gates"] == changed_gates(candidate, observed)
     assert entry["unresolved_fraction"] == unresolved_fraction(candidate, observed)
+    assert entry["resolved_fraction"] == 1.0 - unresolved_fraction(candidate, observed)
+    assert entry["reference_name"] == "reference"
+    assert entry["metric_scope"] == "reference_consistency"
+    assert entry["mae_vs_reference"] == mae(candidate, reference)
     assert entry["mae_vs_pyart"] == mae(candidate, reference)
     assert entry["metadata"]["method"] == "demo"
 
@@ -84,20 +89,54 @@ def test_discover_archive_files_filters_zip_files(tmp_path):
 
 
 def test_run_solver_pair_switches_backend_and_preserves_python_fallback():
-    module = SimpleNamespace(_NATIVE_BACKEND="native")
+    class FakeBackend:
+        def solver(self):
+            return "native"
+
+    module = SimpleNamespace(_NATIVE_BACKEND=FakeBackend())
 
     def solver(*args, **kwargs):
-        return "native" if module._NATIVE_BACKEND is not None else "python"
+        backend = resolve_rust_backend(module._NATIVE_BACKEND)
+        return "native" if backend is not None else "python"
 
     module.solver = solver
     payload = run_solver_pair(module, "solver")
 
     assert payload["backend_available"] is True
+    assert payload["native_acceleration_available"] is True
     assert payload["public_result"] == "native"
     assert payload["python_result"] == "python"
+    assert payload["python_policy_result"] == "python"
     assert payload["public_runtime_s"] >= 0.0
     assert payload["python_runtime_s"] >= 0.0
-    assert module._NATIVE_BACKEND == "native"
+    assert payload["python_policy_runtime_s"] >= 0.0
+    assert payload["public_policy"] == "auto"
+    assert payload["python_policy"] == "python"
+    assert payload["comparison_mode"] == "prepared_solver_call_auto_vs_transitive_python_policy"
+    assert payload["comparison_scope"] == "prepared_solver_call"
+    assert isinstance(module._NATIVE_BACKEND, FakeBackend)
+
+
+def test_run_solver_pair_forces_python_policy_transitively():
+    upstream = SimpleNamespace(_NATIVE_BACKEND="native")
+    downstream = SimpleNamespace(_NATIVE_BACKEND="native")
+
+    def helper():
+        return "native_helper" if resolve_rust_backend(downstream._NATIVE_BACKEND) is not None else "python_helper"
+
+    def solver():
+        current = "native_solver" if resolve_rust_backend(upstream._NATIVE_BACKEND) is not None else "python_solver"
+        return current, helper()
+
+    upstream.solver = solver
+    baseline_policy = get_backend_policy()
+
+    payload = run_solver_pair(upstream, "solver")
+
+    assert payload["public_result"] == ("native_solver", "native_helper")
+    assert payload["python_result"] == ("python_solver", "python_helper")
+    assert payload["initial_policy"] == baseline_policy
+    assert get_backend_policy() == baseline_policy
 
 
 def test_compare_dealias_results_reports_differences():

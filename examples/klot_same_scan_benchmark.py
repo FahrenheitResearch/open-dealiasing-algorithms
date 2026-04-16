@@ -103,7 +103,7 @@ def _latest_pair_for_radar(radar_id: str) -> tuple[str, str]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark open dealiasing algorithms against Py-ART on one real scan without Py-ART leakage into temporal or supervised inputs.")
+    parser = argparse.ArgumentParser(description="Benchmark open dealiasing algorithms against Py-ART on one real scan as a reference-consistency check without Py-ART leakage into temporal or supervised inputs.")
     parser.add_argument("--target-key", default=DEFAULT_TARGET_KEY, help="Full Level II S3 key for the target volume.")
     parser.add_argument("--previous-key", default=DEFAULT_PREVIOUS_KEY, help="Full Level II S3 key for the previous volume.")
     parser.add_argument("--target-sweep", type=int, default=DEFAULT_TARGET_SWEEP, help="Sweep index to benchmark.")
@@ -115,6 +115,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--range-start", type=int, default=DEFAULT_RANGE_GATE_START, help="First range gate to include.")
     parser.add_argument("--range-stop", type=int, default=DEFAULT_RANGE_GATE_STOP, help="Exclusive last range gate to include.")
     parser.add_argument("--output-prefix", default=DEFAULT_OUTPUT_PREFIX, help="Output filename prefix under examples/output.")
+    parser.add_argument("--repeats", type=int, default=2, help="Timed samples per package policy when a paired auto-vs-python comparison is run.")
+    parser.add_argument("--warmup", type=int, default=1, help="Untimed warmup calls per package policy when a paired auto-vs-python comparison is run.")
     parser.add_argument(
         "--latest-radar",
         default=None,
@@ -135,6 +137,8 @@ def main() -> None:
     range_start = int(args.range_start)
     range_stop = int(args.range_stop)
     output_prefix = str(args.output_prefix)
+    repeats = int(args.repeats)
+    warmup = int(args.warmup)
 
     cache_dir = REPO_ROOT / ".cache" / "nexrad"
     target_path = download_nexrad_key(target_key, out_dir=cache_dir)
@@ -203,7 +207,15 @@ def main() -> None:
         result = runner()
         runtime = time.perf_counter() - start
         field = result.velocity[target_volume_local_index] if result.velocity.ndim == 3 else result.velocity
-        results[name] = record_scored_result(name, field, target_obs, pyart_target, runtime, metadata=result.metadata)
+        results[name] = record_scored_result(
+            name,
+            field,
+            target_obs,
+            pyart_target,
+            runtime,
+            metadata=result.metadata,
+            reference_name="pyart_region_based",
+        )
         panel_fields.append((name, field))
 
     volume3d_pair = run_solver_pair(
@@ -212,6 +224,8 @@ def main() -> None:
         target_volume_obs,
         np.array([target_radar.get_nyquist_vel(i) for i in volume_sweeps], dtype=float),
         reference_volume=previous_open_volume,
+        repeats=repeats,
+        warmup=warmup,
     )
     volume3d_public = volume3d_pair["public_result"]
     volume3d_python = volume3d_pair["python_result"]
@@ -223,6 +237,7 @@ def main() -> None:
         pyart_target,
         volume3d_pair["public_runtime_s"],
         metadata=volume3d_public.metadata,
+        reference_name="pyart_region_based",
     )
     results["volume_3d"].update(
         {
@@ -258,6 +273,10 @@ def main() -> None:
         "volume_sweeps": volume_sweeps,
         "range_gate_start": range_start,
         "range_gate_stop": range_stop,
+        "benchmark_scope": "reference_consistency_not_truth",
+        "reference_name": "pyart_region_based",
+        "paired_policy_repeats": repeats,
+        "paired_policy_warmup": warmup,
         "nyquist_target": target_sweep.nyquist,
         "valid_qc_velocity_gates": int(np.isfinite(target_obs).sum()),
         "previous_sweep_anchor": previous_open_sweep_meta,
@@ -315,7 +334,7 @@ def main() -> None:
     for name, metrics in results.items():
         print(
             f"{name:12s} changed={metrics['changed_gates']:6d} unresolved={metrics['unresolved_fraction']:.4f} "
-            f"mae_vs_pyart={metrics['mae_vs_pyart']:.3f} runtime={metrics['runtime_s']:.2f}s"
+            f"mae_vs_reference={metrics['mae_vs_reference']:.3f} runtime={metrics['runtime_s']:.2f}s"
         )
     for item in skipped:
         print(f"{item['name']:12s} skipped reason={item['skip_reason']}")

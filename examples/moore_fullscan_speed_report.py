@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 import zipfile
 from typing import Any
 
@@ -44,6 +45,18 @@ def _parse_args() -> argparse.Namespace:
         "--output-prefix",
         default="moore_fullscan_speed_report",
         help="Prefix for the JSON report written into examples/output.",
+    )
+    parser.add_argument("--repeats", type=int, default=3, help="Number of timed samples per solver/policy.")
+    parser.add_argument("--warmup", type=int, default=1, help="Number of untimed warmup calls per solver/policy.")
+    parser.add_argument(
+        "--skip-volume",
+        action="store_true",
+        help="Skip previous-volume-dependent solvers and anchors for a quicker prepared-input timing run.",
+    )
+    parser.add_argument(
+        "--solvers",
+        default="",
+        help="Comma-separated subset of solver keys to run, for example 'build_velocity_qc_mask,es90,zw06,region_graph'. Empty means all applicable solvers.",
     )
     return parser.parse_args()
 
@@ -216,10 +229,18 @@ def _load_case(target_path: Path, previous_path: Path | None, sweep: int) -> dic
 
 def _solver_summary(pair: dict[str, Any]) -> dict[str, Any]:
     return {
-        "public_runtime_s": float(pair["public_runtime_s"]),
+        "auto_runtime_s": float(pair["public_runtime_s"]),
         "python_runtime_s": float(pair["python_runtime_s"]),
+        "python_policy_runtime_s": float(pair["python_policy_runtime_s"]),
         "speedup": float(pair["python_runtime_s"] / pair["public_runtime_s"]) if pair["public_runtime_s"] > 0 else float("nan"),
         "backend_available": bool(pair["backend_available"]),
+        "native_acceleration_available": bool(pair["native_acceleration_available"]),
+        "comparison_mode": str(pair["comparison_mode"]),
+        "comparison_scope": str(pair["comparison_scope"]),
+        "auto_policy": str(pair["public_policy"]),
+        "python_policy": str(pair["python_policy"]),
+        "repeats": int(pair["repeats"]),
+        "warmup": int(pair["warmup"]),
         "parity": compare_dealias_results(pair["public_result"], pair["python_result"]),
         "metadata": dict(pair["public_result"].metadata),
     }
@@ -227,6 +248,12 @@ def _solver_summary(pair: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     args = _parse_args()
+    selected_solvers = {name.strip() for name in str(args.solvers).split(",") if name.strip()}
+
+    def want(name: str) -> bool:
+        return not selected_solvers or name in selected_solvers
+
+    prep_start = time.perf_counter()
     archive_path = (REPO_ROOT / args.archive_path).resolve() if not Path(args.archive_path).is_absolute() else Path(args.archive_path)
     target_path, previous_path = _materialize_archive_member(archive_path, args.target_fragment)
     case = _load_case(target_path, previous_path, int(args.sweep))
@@ -235,48 +262,105 @@ def main() -> None:
     reflectivity = np.asarray(case["reflectivity"], dtype=float)
     reference = np.asarray(case["reference"], dtype=float)
     nyquist = float(case["nyquist"])
+    prep_runtime_s = time.perf_counter() - prep_start
 
     results: dict[str, dict[str, Any]] = {}
 
-    qc_pair = run_solver_pair(
-        qc_module,
-        "build_velocity_qc_mask",
-        observed,
-        reflectivity=reflectivity,
-        texture=None,
-        min_reflectivity=-5.0,
-        max_texture=18.0,
-        min_gate_fraction_in_ray=0.01,
-        wrap_azimuth=True,
-    )
-    results["build_velocity_qc_mask"] = {
-        "public_runtime_s": float(qc_pair["public_runtime_s"]),
-        "python_runtime_s": float(qc_pair["python_runtime_s"]),
-        "speedup": float(qc_pair["python_runtime_s"] / qc_pair["public_runtime_s"]) if qc_pair["public_runtime_s"] > 0 else float("nan"),
-        "backend_available": bool(qc_pair["backend_available"]),
-    }
-
-    results["es90"] = _solver_summary(run_solver_pair(continuity_module, "dealias_sweep_es90", observed, nyquist, reference=reference))
-    results["zw06"] = _solver_summary(run_solver_pair(multipass_module, "dealias_sweep_zw06", observed, nyquist, reference=reference))
-    results["xu11"] = _solver_summary(
-        run_solver_pair(
-            vad_module,
-            "dealias_sweep_xu11",
+    if want("build_velocity_qc_mask"):
+        qc_pair = run_solver_pair(
+            qc_module,
+            "build_velocity_qc_mask",
             observed,
-            nyquist,
-            case["azimuth_deg"],
-            elevation_deg=case["elevation_deg"],
-            external_reference=reference,
+            reflectivity=reflectivity,
+            texture=None,
+            min_reflectivity=-5.0,
+            max_texture=18.0,
+            min_gate_fraction_in_ray=0.01,
+            wrap_azimuth=True,
+            repeats=args.repeats,
+            warmup=args.warmup,
         )
-    )
-    results["region_graph"] = _solver_summary(run_solver_pair(region_graph_module, "dealias_sweep_region_graph", observed, nyquist, reference=reference))
-    if case.get("previous_volume_obs") is not None and case.get("volume_sweeps") is not None and case["sweep"] in case["volume_sweeps"]:
+        results["build_velocity_qc_mask"] = {
+            "auto_runtime_s": float(qc_pair["public_runtime_s"]),
+            "python_runtime_s": float(qc_pair["python_runtime_s"]),
+            "python_policy_runtime_s": float(qc_pair["python_policy_runtime_s"]),
+            "speedup": float(qc_pair["python_runtime_s"] / qc_pair["public_runtime_s"]) if qc_pair["public_runtime_s"] > 0 else float("nan"),
+            "backend_available": bool(qc_pair["backend_available"]),
+            "native_acceleration_available": bool(qc_pair["native_acceleration_available"]),
+            "comparison_mode": str(qc_pair["comparison_mode"]),
+            "comparison_scope": str(qc_pair["comparison_scope"]),
+            "auto_policy": str(qc_pair["public_policy"]),
+            "python_policy": str(qc_pair["python_policy"]),
+            "repeats": int(qc_pair["repeats"]),
+            "warmup": int(qc_pair["warmup"]),
+        }
+
+    if want("es90"):
+        results["es90"] = _solver_summary(
+            run_solver_pair(
+                continuity_module,
+                "dealias_sweep_es90",
+                observed,
+                nyquist,
+                reference=reference,
+                repeats=args.repeats,
+                warmup=args.warmup,
+            )
+        )
+    if want("zw06"):
+        results["zw06"] = _solver_summary(
+            run_solver_pair(
+                multipass_module,
+                "dealias_sweep_zw06",
+                observed,
+                nyquist,
+                reference=reference,
+                repeats=args.repeats,
+                warmup=args.warmup,
+            )
+        )
+    shared_anchor_runtime_s = 0.0
+    if want("xu11"):
+        results["xu11"] = _solver_summary(
+            run_solver_pair(
+                vad_module,
+                "dealias_sweep_xu11",
+                observed,
+                nyquist,
+                case["azimuth_deg"],
+                elevation_deg=case["elevation_deg"],
+                external_reference=reference,
+                repeats=args.repeats,
+                warmup=args.warmup,
+            )
+        )
+    if want("region_graph"):
+        results["region_graph"] = _solver_summary(
+            run_solver_pair(
+                region_graph_module,
+                "dealias_sweep_region_graph",
+                observed,
+                nyquist,
+                reference=reference,
+                repeats=args.repeats,
+                warmup=args.warmup,
+            )
+        )
+    if (
+        not args.skip_volume
+        and want("jh01")
+        and case.get("previous_volume_obs") is not None
+        and case.get("volume_sweeps") is not None
+        and case["sweep"] in case["volume_sweeps"]
+    ):
         current_index = case["volume_sweeps"].index(case["sweep"])
         previous_current_sweep = np.asarray(case["previous_volume_obs"], dtype=float)[current_index]
+        anchor_start = time.perf_counter()
         previous_open_current_sweep = open_zw06_volume_anchor(
             np.asarray([previous_current_sweep], dtype=float),
             np.asarray([np.asarray(case["previous_volume_nyquist"], dtype=float)[current_index]], dtype=float),
         )[0][0]
+        shared_anchor_runtime_s += time.perf_counter() - anchor_start
         results["jh01"] = _solver_summary(
             run_solver_pair(
                 fourdd_module,
@@ -284,54 +368,109 @@ def main() -> None:
                 observed,
                 nyquist,
                 previous_corrected=previous_open_current_sweep,
+                repeats=args.repeats,
+                warmup=args.warmup,
             )
         )
-    results["recursive"] = _solver_summary(run_solver_pair(recursive_module, "dealias_sweep_recursive", observed, nyquist, reference=reference))
-    results["variational"] = _solver_summary(run_solver_pair(variational_module, "dealias_sweep_variational", observed, nyquist, reference=reference, max_iterations=4))
-    ml_pair = run_solver_pair(
-        ml_module,
-        "dealias_sweep_ml",
-        observed,
-        nyquist,
-        training_target=reference,
-        reference=reference,
-        azimuth_deg=case["azimuth_deg"],
-        refine_with_variational=False,
-    )
-    results["ml"] = _solver_summary(ml_pair)
-    ml_backend = getattr(ml_module, "_NATIVE_BACKEND", None)
-    results["ml"]["backend_available"] = bool(ml_backend is not None and hasattr(ml_backend, "dealias_sweep_ml"))
+    if want("recursive"):
+        results["recursive"] = _solver_summary(
+            run_solver_pair(
+                recursive_module,
+                "dealias_sweep_recursive",
+                observed,
+                nyquist,
+                reference=reference,
+                repeats=args.repeats,
+                warmup=args.warmup,
+            )
+        )
+    if want("variational"):
+        results["variational"] = _solver_summary(
+            run_solver_pair(
+                variational_module,
+                "dealias_sweep_variational",
+                observed,
+                nyquist,
+                reference=reference,
+                max_iterations=4,
+                backend_method="dealias_sweep_variational_refine",
+                repeats=args.repeats,
+                warmup=args.warmup,
+            )
+        )
+    if want("ml"):
+        ml_pair = run_solver_pair(
+            ml_module,
+            "dealias_sweep_ml",
+            observed,
+            nyquist,
+            training_target=reference,
+            reference=reference,
+            azimuth_deg=case["azimuth_deg"],
+            refine_with_variational=False,
+            repeats=args.repeats,
+            warmup=args.warmup,
+        )
+        results["ml"] = _solver_summary(ml_pair)
 
-    if case["previous_volume_obs"] is not None and case["previous_volume_nyquist"] is not None:
+    if (
+        not args.skip_volume
+        and (want("volume_3d") or want("jh01_volume"))
+        and case["previous_volume_obs"] is not None
+        and case["previous_volume_nyquist"] is not None
+    ):
+        anchor_start = time.perf_counter()
         previous_open_volume, previous_open_volume_meta = open_zw06_volume_anchor(
             np.asarray(case["previous_volume_obs"], dtype=float),
             np.asarray(case["previous_volume_nyquist"], dtype=float),
         )
-        volume_pair = run_solver_pair(
-            volume3d_module,
-            "dealias_volume_3d",
-            np.asarray(case["target_volume_obs"], dtype=float),
-            np.asarray(case["target_volume_nyquist"], dtype=float),
-            reference_volume=previous_open_volume,
-        )
-        results["volume_3d"] = _solver_summary(volume_pair)
-        results["volume_3d"]["previous_volume_anchor"] = previous_open_volume_meta
-        results["jh01_volume"] = _solver_summary(
-            run_solver_pair(
-                fourdd_module,
-                "dealias_volume_jh01",
+        shared_anchor_runtime_s += time.perf_counter() - anchor_start
+        if want("volume_3d"):
+            volume_pair = run_solver_pair(
+                volume3d_module,
+                "dealias_volume_3d",
                 np.asarray(case["target_volume_obs"], dtype=float),
                 np.asarray(case["target_volume_nyquist"], dtype=float),
-                azimuth_deg=case["azimuth_deg"],
-                elevation_deg=np.asarray(case["target_volume_elevation"], dtype=float),
-                previous_volume=previous_open_volume,
+                reference_volume=previous_open_volume,
+                repeats=args.repeats,
+                warmup=args.warmup,
             )
-        )
-        results["jh01_volume"]["previous_volume_anchor"] = previous_open_volume_meta
+            results["volume_3d"] = _solver_summary(volume_pair)
+            results["volume_3d"]["previous_volume_anchor"] = previous_open_volume_meta
+        if want("jh01_volume"):
+            results["jh01_volume"] = _solver_summary(
+                run_solver_pair(
+                    fourdd_module,
+                    "dealias_volume_jh01",
+                    np.asarray(case["target_volume_obs"], dtype=float),
+                    np.asarray(case["target_volume_nyquist"], dtype=float),
+                    azimuth_deg=case["azimuth_deg"],
+                    elevation_deg=np.asarray(case["target_volume_elevation"], dtype=float),
+                    previous_volume=previous_open_volume,
+                    repeats=args.repeats,
+                    warmup=args.warmup,
+                )
+            )
+            results["jh01_volume"]["previous_volume_anchor"] = previous_open_volume_meta
 
-    aggregate_keys = [name for name, payload in results.items() if payload.get("backend_available")]
-    total_public = float(sum(results[name]["public_runtime_s"] for name in aggregate_keys))
+    aggregate_keys = list(results)
+    total_auto = float(sum(results[name]["auto_runtime_s"] for name in aggregate_keys))
     total_python = float(sum(results[name]["python_runtime_s"] for name in aggregate_keys))
+    parity_issues = [
+        {
+            "name": name,
+            "folds_mismatch_count": int(metrics["parity"]["folds_mismatch_count"]),
+            "velocity_mae": float(metrics["parity"]["velocity_mae"]),
+            "velocity_max_abs_diff": float(metrics["parity"]["velocity_max_abs_diff"]),
+        }
+        for name, metrics in results.items()
+        if isinstance(metrics, dict)
+        and isinstance(metrics.get("parity"), dict)
+        and (
+            int(metrics["parity"].get("folds_mismatch_count", 0)) > 0
+            or float(metrics["parity"].get("velocity_mae", 0.0)) > 0.0
+        )
+    ]
 
     payload = {
         "scan": case["scan"],
@@ -339,13 +478,31 @@ def main() -> None:
         "sweep": case["sweep"],
         "shape": case["shape"],
         "nyquist": case["nyquist"],
+        "benchmark_scope": {
+            "comparison_mode": "prepared_solver_call_auto_vs_transitive_python_policy",
+            "timed_stage": "solver_entrypoints_on_prepared_case",
+            "comparison_meaning": "Each timed pair runs once under package-wide auto policy and once under package-wide python policy so transitive native dispatch is disabled in the comparison run.",
+            "repeats": int(args.repeats),
+            "warmup": int(args.warmup),
+            "skip_volume": bool(args.skip_volume),
+            "selected_solvers": sorted(selected_solvers) if selected_solvers else "all_applicable",
+            "excludes": [
+                "archive download and extraction",
+                "Py-ART archive loading",
+                "shared QC and VAD preparation performed in _load_case",
+                "shared previous-volume anchor generation outside the individual solver timers",
+            ],
+            "shared_case_prep_runtime_s": float(prep_runtime_s),
+            "shared_anchor_runtime_s": float(shared_anchor_runtime_s),
+        },
         "measured": results,
         "aggregate": {
             "measured_calls": aggregate_keys,
-            "total_public_runtime_s": total_public,
-            "total_python_runtime_s": total_python,
-            "weighted_speedup": float(total_python / total_public) if total_public > 0 else float("nan"),
+            "total_auto_solver_runtime_s": total_auto,
+            "total_python_solver_runtime_s": total_python,
+            "solver_stage_speedup": float(total_python / total_auto) if total_auto > 0 else float("nan"),
         },
+        "parity_issues": parity_issues,
     }
 
     out_dir = REPO_ROOT / "examples" / "output"
@@ -354,15 +511,26 @@ def main() -> None:
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     print(json_path)
-    print(f"aggregate python baseline: {total_python:.3f}s")
-    print(f"aggregate native-backed:  {total_public:.3f}s")
-    print(f"aggregate weighted speedup: {payload['aggregate']['weighted_speedup']:.2f}x")
+    print(f"shared case prep runtime: {prep_runtime_s:.3f}s")
+    print(f"shared anchor runtime:    {shared_anchor_runtime_s:.3f}s")
+    print(f"aggregate package-python solver runtime: {total_python:.3f}s")
+    print(f"aggregate package-auto solver runtime:   {total_auto:.3f}s")
+    print(f"aggregate solver-stage speedup: {payload['aggregate']['solver_stage_speedup']:.2f}x")
+    print("note: these are prepared solver-call timings, not full archive-to-product wall time.")
     for name, metrics in results.items():
         print(
-            f"{name:22s} public={metrics['public_runtime_s']:.3f}s "
-            f"python={metrics['python_runtime_s']:.3f}s "
+            f"{name:22s} auto={metrics['auto_runtime_s']:.3f}s "
+            f"python_policy={metrics['python_policy_runtime_s']:.3f}s "
             f"speedup={metrics['speedup']:.2f}x"
         )
+    if parity_issues:
+        print("parity issues detected on this real case:")
+        for item in parity_issues:
+            print(
+                f"  {item['name']}: folds_mismatch_count={item['folds_mismatch_count']} "
+                f"velocity_mae={item['velocity_mae']:.6f} "
+                f"velocity_max_abs_diff={item['velocity_max_abs_diff']:.3f}"
+            )
 
 
 if __name__ == "__main__":

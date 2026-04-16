@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 
 from ._core import combine_references, fold_counts, shift2d, shift3d, unfold_to_reference
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .multipass import dealias_sweep_zw06
 from .types import DealiasResult
 from .vad import build_reference_from_uv
@@ -40,9 +41,10 @@ def _fold_counts_by_sweep(corrected: np.ndarray, observed: np.ndarray, nyquist: 
 
 
 def _native_method(name: str):
-    if _NATIVE_BACKEND is None:
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is None:
         return None
-    method = getattr(_NATIVE_BACKEND, name, None)
+    method = getattr(backend, name, None)
     return method if callable(method) else None
 
 
@@ -102,12 +104,19 @@ def dealias_sweep_jh01(
         )
         result = _coerce_native_result(native_result, reference=ref)
         result.reference = ref if result.reference is None else result.reference
-        return result
+        return attach_result_state_from_fields(
+            result,
+            obs,
+            source=str(result.metadata.get("method", "temporal_reference_only")),
+            parent=str(result.metadata.get("paper_family", "JamesHouze2001")),
+            fill_policy=str(result.metadata.get("fill_policy", "temporal_reference_then_cleanup")),
+        )
 
     first_guess = unfold_to_reference(obs, ref, nyquist)
     if not refine_with_multipass:
         confidence = np.where(np.isfinite(first_guess), 0.85, 0.0)
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=first_guess,
             folds=fold_counts(first_guess, obs, nyquist),
             confidence=confidence,
@@ -120,6 +129,11 @@ def dealias_sweep_jh01(
                 'fill_policy': 'temporal_reference_only',
                 **_gate_stats(obs, first_guess),
             },
+            ),
+            obs,
+            source="temporal_reference_only",
+            parent="JamesHouze2001",
+            fill_policy="temporal_reference_only",
         )
 
     result = dealias_sweep_zw06(obs, nyquist, reference=ref, wrap_azimuth=wrap_azimuth)
@@ -132,7 +146,13 @@ def dealias_sweep_jh01(
         'fill_policy': 'temporal_reference_then_multipass_cleanup',
         **_gate_stats(obs, result.velocity),
     })
-    return result
+    return attach_result_state_from_fields(
+        result,
+        obs,
+        source=str(result.metadata.get("method", "temporal_multipass")),
+        parent=str(result.metadata.get("paper_family", "JamesHouze2001+ZhangWang2006")),
+        fill_policy=str(result.metadata.get("fill_policy", "temporal_reference_then_multipass_cleanup")),
+    )
 
 
 def dealias_volume_jh01(
@@ -182,7 +202,13 @@ def dealias_volume_jh01(
             int(shift_range),
             bool(wrap_azimuth),
         )
-        return _coerce_native_result(native_result, reference=None)
+        return attach_result_state_from_fields(
+            _coerce_native_result(native_result, reference=None),
+            obs,
+            source="descending_volume_4dd_lite",
+            parent="JamesHouze2001",
+            fill_policy="descending_volume_reference_then_cleanup",
+        )
 
     corrected = np.full(obs.shape, np.nan, dtype=float)
     confidence = np.zeros(obs.shape, dtype=float)
@@ -224,7 +250,8 @@ def dealias_volume_jh01(
             reference[sweep] = res.reference
         per_sweep_meta[sweep] = res.metadata
 
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=_fold_counts_by_sweep(corrected, obs, nyq),
         confidence=confidence,
@@ -239,4 +266,9 @@ def dealias_volume_jh01(
             'fill_policy': 'descending_volume_reference_then_cleanup',
             **_gate_stats(obs, corrected),
         },
+        ),
+        obs,
+        source="descending_volume_4dd_lite",
+        parent="JamesHouze2001",
+        fill_policy="descending_volume_reference_then_cleanup",
     )

@@ -1,6 +1,8 @@
 # Paper map
 
 This library intentionally names methods after the paper families they came from.
+The labels below are also tagged by role so it is clear which functions are core
+solvers and which are compositions around anchors or cleanup passes.
 
 ## `dealias_radial_es90`
 
@@ -13,6 +15,10 @@ What is implemented:
 - radial-by-radial continuity,
 - optional background reference anchoring,
 - local extrapolation and step limiting.
+
+Role:
+
+- core solver
 
 ## `dealias_sweep_zw06`
 
@@ -28,6 +34,10 @@ What is implemented:
 - strict-to-relaxed multipass propagation,
 - optional external reference anchoring.
 
+Role:
+
+- hybrid composition around a 2D continuity core
+
 ## `dealias_sweep_xu11`
 
 Closest public source:
@@ -40,6 +50,10 @@ What is implemented:
 - unwrap-and-refit loops,
 - VAD reference construction,
 - optional 2D multipass refinement.
+
+Role:
+
+- anchor provider plus hybrid composition
 
 ## `dealias_sweep_jh01` / `dealias_volume_jh01`
 
@@ -54,6 +68,10 @@ What is implemented:
 - optional background wind fusion,
 - 2D multipass cleanup on top of temporal guidance.
 
+Role:
+
+- temporal hybrid composition
+
 ## Related open implementations worth comparing
 
 - Py-ART `dealias_region_based`
@@ -61,4 +79,6 @@ What is implemented:
 - UNRAVEL
 - R2D2
 
-Those projects are highly relevant, but this repo keeps the implementation surface small and portable.
+Those projects are highly relevant, but this repo keeps the implementation
+surface small and portable. When comparing them, always say whether you are
+looking at a core solver, an anchor-assisted composition, or a cleanup pass.

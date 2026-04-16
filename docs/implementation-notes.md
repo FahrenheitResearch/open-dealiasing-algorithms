@@ -1,6 +1,7 @@
 # Implementation notes for practical Doppler velocity dealiasing
 
-This document is for developers building dealiasing into an open radar stack that consumes Level II or similar radial data.
+This document is for developers building dealiasing into an open radar stack
+that consumes Level II or similar radial data.
 
 ## 1. Think in terms of a pipeline, not a single function
 
@@ -14,43 +15,68 @@ A practical dealiasing pipeline usually has these stages:
 6. apply targeted cleanup,
 7. evaluate and flag unresolved regions.
 
-The most common mistake is to focus on step 5 while neglecting steps 2–4.
+The most common mistake is to focus on step 5 while neglecting steps 2-4.
+
+## 1b. What "Rust-backed" means here
+
+In this repo, "Rust-backed" is intentionally narrow:
+
+- some low-level array helpers have native implementations,
+- some public solver entry points dispatch to the native backend when it is
+  available,
+- Python still owns orchestration, composition, archive I/O, plotting, and the
+  fallback path.
+
+That means a method can be partly accelerated without being fully native or
+fully independent. A Rust-backed composition may still do bootstrap logic,
+cleanup logic, or metadata assembly in Python.
 
 ## 2. Data model: rays, sweeps, volumes
 
 ### Per-ray
 
-A ray is a single azimuth sample at one elevation cut. Per-ray logic is natural for 1D continuity methods.
+A ray is a single azimuth sample at one elevation cut. Per-ray logic is natural
+for 1D continuity methods.
 
 ### Per-sweep
 
-A sweep is a 2D azimuth–range field at fixed elevation. Most practical open methods are easiest to reason about here.
+A sweep is a 2D azimuth-range field at fixed elevation. Most practical open
+methods are easiest to reason about here.
 
 ### Volume
 
-A volume stacks multiple sweeps in time order. Temporal continuity methods and some 3D methods need this broader context.
+A volume stacks multiple sweeps in time order. Temporal continuity methods and
+some 3D methods need this broader context.
 
 ### Recommendation
 
-Treat the sweep as the default working object, but preserve access to per-ray metadata and prior-volume state.
+Treat the sweep as the default working object, but preserve access to per-ray
+metadata and prior-volume state.
 
 ## 3. Scan geometry matters
 
 ### Azimuth wrap-around
 
-Azimuth is periodic. Neighbor logic should usually connect the first and last ray of a sweep.
+Azimuth is periodic. Neighbor logic should usually connect the first and last
+ray of a sweep.
 
 ### Range spacing
 
-Gate spacing controls how much physical shear can occur between gates. A continuity threshold that is acceptable at coarse spacing can be too aggressive at fine spacing.
+Gate spacing controls how much physical shear can occur between gates. A
+continuity threshold that is acceptable at coarse spacing can be too aggressive
+at fine spacing.
 
 ### Elevation and height
 
-A background wind profile is only useful if you map each gate to an appropriate height. Even a simple flat-earth approximation should be stated as an approximation.
+A background wind profile is only useful if you map each gate to an appropriate
+height. Even a simple flat-earth approximation should be stated as an
+approximation.
 
 ### Changing geometry across volumes
 
-Temporal continuity is only easy if scan geometry matches. If azimuth counts, gate spacing, or cut order change, you need remapping before you can trust prior volumes.
+Temporal continuity is only easy if scan geometry matches. If azimuth counts,
+gate spacing, or cut order change, you need remapping before you can trust
+prior volumes.
 
 ## 4. Quality-control prerequisites
 
@@ -68,17 +94,25 @@ Recommended QC inputs when available:
 
 ### Velocity texture
 
-Texture is one of the most useful generic indicators. High local texture often marks noise, clutter edges, or aliased discontinuities that should not be trusted as seeds.
+Texture is one of the most useful generic indicators. High local texture often
+marks noise, clutter edges, or aliased discontinuities that should not be
+trusted as seeds.
 
 ### Conservative rule
 
-It is usually better to leave questionable gates unresolved than to let them anchor a large region incorrectly.
+It is usually better to leave questionable gates unresolved than to let them
+anchor a large region incorrectly.
+
+If you later fill unresolved gates, keep the fill policy explicit and preserve
+the fact that they were unresolved before the fill. Do not silently convert
+uncertain gates into certain ones.
 
 ## 5. Seed selection
 
 ### Why seed choice matters
 
-A wrong seed does not only harm one gate. It can set the absolute Nyquist interval for an entire connected region.
+A wrong seed does not only harm one gate. It can set the absolute Nyquist
+interval for an entire connected region.
 
 ### Good seed candidates
 
@@ -98,7 +132,8 @@ A wrong seed does not only harm one gate. It can set the absolute Nyquist interv
 
 ## 6. Continuity thresholds
 
-A continuity threshold should reflect expected physical gradients and data resolution, not just a fixed fraction of the Nyquist interval.
+A continuity threshold should reflect expected physical gradients and data
+resolution, not just a fixed fraction of the Nyquist interval.
 
 Questions to ask:
 
@@ -120,13 +155,15 @@ Missing data is not just an inconvenience. It breaks continuity.
 
 ### Recommended behavior
 
-- keep missing gates as missing unless a strong regional or reference-based reason exists to fill them,
+- keep missing gates as missing unless a strong regional or reference-based
+  reason exists to fill them,
 - avoid letting large gaps bridge separate regions automatically,
 - treat gap-spanning corrections as lower confidence.
 
 ### Common mistake
 
-Connecting across a large gap with the same logic used for adjacent valid gates.
+Connecting across a large gap with the same logic used for adjacent valid
+gates.
 
 ## 8. Handling noisy gates and low-SNR environments
 
@@ -144,7 +181,9 @@ Practical responses:
 
 ## 9. Biological contamination and non-meteorological echoes
 
-Birds, insects, ground clutter, wind farms, sidelobes, and anomalous propagation can all create velocity patterns that are internally smooth enough to fool a continuity-based method.
+Birds, insects, ground clutter, wind farms, sidelobes, and anomalous
+propagation can all create velocity patterns that are internally smooth enough
+to fool a continuity-based method.
 
 Recommendations:
 
@@ -154,23 +193,27 @@ Recommendations:
 
 ## 10. Range-folded and mixed-origin gates
 
-Velocity dealiasing is not a cure for every bad gate. If the return itself is contaminated by range ambiguity or mixed targets, choosing a fold count may still produce a physically meaningless result.
+Velocity dealiasing is not a cure for every bad gate. If the return itself is
+contaminated by range ambiguity or mixed targets, choosing a fold count may
+still produce a physically meaningless result.
 
 Recommendation:
 
 - tag such gates as low-confidence or unresolved,
-- avoid scoring them as “corrected” just because the output looks smooth.
+- avoid scoring them as "corrected" just because the output looks smooth.
 
 ## 11. Velocity texture and small-scale shear
 
-Texture is useful, but beware a trap: real mesocyclones and tornado signatures are also high-gradient regions.
+Texture is useful, but beware a trap: real mesocyclones and tornado signatures
+are also high-gradient regions.
 
 A good pipeline does not simply delete all high-texture gates. It distinguishes:
 
 - high texture from noise or mixed targets,
 - high gradient from genuine compact meteorological structure.
 
-That usually means combining texture with reflectivity support, spatial coherence, and perhaps prior-volume context.
+That usually means combining texture with reflectivity support, spatial
+coherence, and perhaps prior-volume context.
 
 ## 12. Environmental-wind references
 
@@ -192,18 +235,21 @@ That usually means combining texture with reflectivity support, spatial coherenc
 
 ### Practical rule
 
-Use the background to choose a plausible Nyquist interval, then let local continuity override it where the data support a coherent local structure.
+Use the background to choose a plausible Nyquist interval, then let local
+continuity override it where the data support a coherent local structure.
 
 ## 13. Previous-volume logic
 
-Temporal continuity can be extremely effective, but only if you manage state carefully.
+Temporal continuity can be extremely effective, but only if you manage state
+carefully.
 
 Recommendations:
 
 - store not just the corrected velocity but also confidence or provenance,
 - remap the previous field to the current geometry before using it,
 - gate temporal trust by elapsed time, scan similarity, and echo evolution,
-- do not let a low-confidence prior field dominate a strong current local signal.
+- do not let a low-confidence prior field dominate a strong current local
+  signal.
 
 ## 14. Per-ray versus per-sweep versus volume logic
 
@@ -227,7 +273,8 @@ Recommendations:
 
 ### Practical design
 
-Use different scopes for different stages instead of forcing one scope to do everything.
+Use different scopes for different stages instead of forcing one scope to do
+everything.
 
 ## 15. Correction of isolated folded gates versus volume-wide ambiguity
 
@@ -235,13 +282,16 @@ These are not the same problem.
 
 ### Isolated folded-gate correction
 
-A few bad gates inside an otherwise correct field. Local methods usually handle this well.
+A few bad gates inside an otherwise correct field. Local methods usually handle
+this well.
 
 ### Volume-wide ambiguity resolution
 
-Large parts of the sweep sit in the wrong Nyquist interval. Local fixes may not know the absolute offset without a good seed or reference.
+Large parts of the sweep sit in the wrong Nyquist interval. Local fixes may not
+know the absolute offset without a good seed or reference.
 
-This distinction matters because a method that is excellent at isolated cleanup may still fail at global ambiguity placement.
+This distinction matters because a method that is excellent at isolated cleanup
+may still fail at global ambiguity placement.
 
 ## 16. Evaluation metrics to compute during development
 
@@ -268,7 +318,19 @@ This distinction matters because a method that is excellent at isolated cleanup 
 - sensitivity to parameter changes,
 - cold-start versus warm-state behavior.
 
-## 17. Logging and reproducibility
+## 17. Solver composition hygiene
+
+When a public function is actually a composition, document the pieces:
+
+- what produced the initial anchor,
+- what solver performed the main unwrap,
+- what cleanup was applied afterward,
+- whether the result was force-filled or left unresolved.
+
+That makes Rust parity work much easier because the port can preserve each
+layer separately instead of collapsing everything into one opaque routine.
+
+## 18. Logging and reproducibility
 
 For serious comparison work, log:
 
@@ -284,7 +346,7 @@ For serious comparison work, log:
 
 Without that metadata, it is very hard to compare algorithms fairly.
 
-## 18. A practical open pipeline recommendation
+## 19. A practical open pipeline recommendation
 
 A sensible open baseline for Level II-like data is:
 
@@ -299,8 +361,7 @@ A sensible open baseline for Level II-like data is:
 
 That design is not the only option, but it is hard to regret.
 
-
-## 19. Implementation-oriented pseudocode
+## 20. Implementation-oriented pseudocode
 
 ### A. 1D radial continuity unwrap
 
@@ -378,9 +439,10 @@ guardrails:
     do not let a low-confidence previous field override strong current local evidence
 ```
 
-## 20. Practical caveat
+## 21. Practical caveat
 
-These pseudocode blocks are deliberately clean and educational. Real systems add:
+These pseudocode blocks are deliberately clean and educational. Real systems
+add:
 
 - richer QC,
 - confidence propagation,

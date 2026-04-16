@@ -7,7 +7,8 @@ from typing import Any
 import numpy as np
 
 from ._core import as_float_array, fold_counts, gaussian_confidence, neighbor_stack, texture_3x3, unfold_to_reference
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .types import DealiasResult
 from .variational import dealias_sweep_variational
 
@@ -30,9 +31,10 @@ class LinearBranchModel:
 
 
 def _native_method(name: str):
-    if _NATIVE_BACKEND is None:
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is None:
         return None
-    method = getattr(_NATIVE_BACKEND, name, None)
+    method = getattr(backend, name, None)
     return method if callable(method) else None
 
 
@@ -259,7 +261,13 @@ def dealias_sweep_ml(
             ridge=float(ridge),
             refine_with_variational=bool(refine_with_variational),
         )
-        return _coerce_dealias_result(native_result, reference=ref)
+        return attach_result_state_from_fields(
+            _coerce_dealias_result(native_result, reference=ref),
+            obs,
+            source="ridge_reference_predictor",
+            parent="MLAssistLite",
+            fill_policy="ml_reference_predict_then_optional_refine",
+        )
 
     trained_from = "supplied_model"
     if model is None:
@@ -301,10 +309,16 @@ def dealias_sweep_ml(
         metadata["refine_iterations"] = refined.metadata.get("iterations_used")
 
     folds = fold_counts(corrected, obs, nyquist)
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=folds,
         confidence=confidence,
         reference=predicted_ref,
         metadata=metadata,
+        ),
+        obs,
+        source="ridge_reference_predictor",
+        parent="MLAssistLite",
+        fill_policy="ml_reference_predict_then_optional_refine",
     )

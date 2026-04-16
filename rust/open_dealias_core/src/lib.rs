@@ -1,187 +1,10 @@
-use ndarray::{Array2, Array3, ArrayD, ArrayView1, ArrayView2, ArrayView3, ArrayViewD, Axis, IxDyn, Zip};
+use ndarray::{
+    Array2, Array3, ArrayD, ArrayView1, ArrayView2, ArrayView3, ArrayViewD, Axis, IxDyn, Zip,
+};
 use std::collections::{HashMap, VecDeque};
 
-#[derive(Debug, thiserror::Error, PartialEq)]
-pub enum DealiasError {
-    #[error("nyquist must be positive, got {0}")]
-    InvalidNyquist(f64),
-    #[error("shift2d expects a 2D array, got {0}D")]
-    Expected2D(usize),
-    #[error("shift3d expects a 3D array, got {0}D")]
-    Expected3D(usize),
-    #[error("max_abs_fold must be non-negative, got {0}")]
-    InvalidMaxAbsFold(i16),
-    #[error("shape mismatch: {0}")]
-    ShapeMismatch(&'static str),
-}
-
-pub type Result<T> = std::result::Result<T, DealiasError>;
-
-pub struct DualPrfResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub low_valid_gates: usize,
-    pub high_valid_gates: usize,
-    pub paired_gates: usize,
-    pub low_branch_mean_fold: f64,
-    pub high_branch_mean_fold: f64,
-    pub mean_pair_gap: f64,
-    pub max_pair_gap: f64,
-}
-
-pub struct Es90RadialResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub seed_index: Option<usize>,
-}
-
-pub struct Es90SweepResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-}
-
-pub struct Zw06Result {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub seeded_gates: usize,
-    pub assigned_gates: usize,
-    pub iterations_used: usize,
-}
-
-pub struct VariationalResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub iterations_used: usize,
-    pub changed_gates: usize,
-}
-
-pub struct RegionGraphResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub region_count: usize,
-    pub assigned_regions: usize,
-    pub seed_region: Option<usize>,
-    pub block_shape: (usize, usize),
-    pub merge_iterations: usize,
-    pub wrap_azimuth: bool,
-    pub average_fold: f64,
-    pub regions_with_reference: usize,
-    pub block_grid_shape: (usize, usize),
-}
-
-pub struct RecursiveResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub leaf_count: usize,
-    pub max_depth: usize,
-    pub split_texture_fraction: f64,
-    pub reference_weight: f64,
-    pub wrap_azimuth: bool,
-    pub root_texture: f64,
-    pub bootstrap_method: &'static str,
-    pub bootstrap_region_count: usize,
-    pub method: &'static str,
-}
-
-pub struct Volume3DResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub seed_sweep: usize,
-    pub iterations_used: usize,
-    pub sweep_order: Vec<usize>,
-    pub per_sweep_valid_gates: Vec<usize>,
-    pub per_sweep_seeded_gates: Vec<usize>,
-    pub per_sweep_assigned_gates: Vec<usize>,
-    pub per_sweep_iterations_used: Vec<usize>,
-}
-
-pub struct VadFitResult {
-    pub u: f64,
-    pub v: f64,
-    pub offset: f64,
-    pub rms: f64,
-    pub iterations: usize,
-    pub reference: ArrayD<f64>,
-}
-
-pub struct Xu11Result {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub u: f64,
-    pub v: f64,
-    pub offset: f64,
-    pub vad_rms: f64,
-    pub vad_iterations: usize,
-    pub method: &'static str,
-}
-
-pub struct Jh01SweepResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub method: &'static str,
-    pub valid_gates: usize,
-    pub assigned_gates: usize,
-    pub unresolved_gates: usize,
-    pub resolved_fraction: f64,
-}
-
-pub struct Jh01VolumeResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub elevation_order_desc: Vec<usize>,
-    pub per_sweep_valid_gates: Vec<usize>,
-    pub per_sweep_assigned_gates: Vec<usize>,
-    pub per_sweep_unresolved_gates: Vec<usize>,
-    pub per_sweep_resolved_fraction: Vec<f64>,
-    pub valid_gates: usize,
-    pub assigned_gates: usize,
-    pub unresolved_gates: usize,
-    pub resolved_fraction: f64,
-}
-
-#[derive(Clone)]
-pub struct MlModelState {
-    pub weights: Vec<f64>,
-    pub feature_names: Vec<String>,
-    pub ridge: f64,
-    pub train_rmse: f64,
-    pub mode: String,
-    pub nyquist: Option<f64>,
-}
-
-pub struct MlDealiasResult {
-    pub velocity: ArrayD<f64>,
-    pub folds: ArrayD<i16>,
-    pub confidence: ArrayD<f64>,
-    pub reference: ArrayD<f64>,
-    pub trained_from: String,
-    pub train_rmse: f64,
-    pub ridge: f64,
-    pub feature_names: Vec<String>,
-    pub refine_method: Option<String>,
-    pub refine_iterations: Option<usize>,
-}
+mod types;
+pub use types::*;
 
 #[inline]
 fn validate_nyquist(nyquist: f64) -> Result<()> {
@@ -213,7 +36,11 @@ fn gaussian_confidence_scalar(mismatch: f64, scale: f64) -> f64 {
 }
 
 fn nanmedian_small(values: &[f64]) -> Option<f64> {
-    let mut finite: Vec<f64> = values.iter().copied().filter(|value| value.is_finite()).collect();
+    let mut finite: Vec<f64> = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
     if finite.is_empty() {
         return None;
     }
@@ -259,11 +86,13 @@ fn quantile_linear(mut values: Vec<f64>, q: f64) -> Option<f64> {
 pub fn wrap_to_nyquist(velocity: ArrayViewD<'_, f64>, nyquist: f64) -> Result<ArrayD<f64>> {
     validate_nyquist(nyquist)?;
     let mut out = ArrayD::from_elem(velocity.raw_dim(), f64::NAN);
-    Zip::from(out.view_mut()).and(velocity).for_each(|out_value, &vel| {
-        if is_finite(vel) {
-            *out_value = (vel + nyquist).rem_euclid(2.0 * nyquist) - nyquist;
-        }
-    });
+    Zip::from(out.view_mut())
+        .and(velocity)
+        .for_each(|out_value, &vel| {
+            if is_finite(vel) {
+                *out_value = (vel + nyquist).rem_euclid(2.0 * nyquist) - nyquist;
+            }
+        });
     Ok(out)
 }
 
@@ -436,12 +265,16 @@ pub fn build_velocity_qc_mask(
 ) -> Result<Array2<bool>> {
     if let Some(refl) = reflectivity {
         if refl.dim() != velocity.dim() {
-            return Err(DealiasError::ShapeMismatch("reflectivity must match velocity shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reflectivity must match velocity shape",
+            ));
         }
     }
     if let Some(tex) = texture {
         if tex.dim() != velocity.dim() {
-            return Err(DealiasError::ShapeMismatch("texture must match velocity shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "texture must match velocity shape",
+            ));
         }
     }
 
@@ -490,7 +323,10 @@ pub fn build_velocity_qc_mask(
     Ok(mask)
 }
 
-fn pick_seed(observed: ArrayView1<'_, f64>, reference: Option<ArrayView1<'_, f64>>) -> Option<usize> {
+fn pick_seed(
+    observed: ArrayView1<'_, f64>,
+    reference: Option<ArrayView1<'_, f64>>,
+) -> Option<usize> {
     let finite: Vec<usize> = observed
         .iter()
         .enumerate()
@@ -507,13 +343,11 @@ fn pick_seed(observed: ArrayView1<'_, f64>, reference: Option<ArrayView1<'_, f64
             .collect();
         if !overlap.is_empty() {
             let center = overlap.iter().map(|idx| *idx as f64).sum::<f64>() / overlap.len() as f64;
-            return overlap
-                .into_iter()
-                .min_by(|a, b| {
-                    ((*a as f64 - center).abs())
-                        .partial_cmp(&((*b as f64 - center).abs()))
-                        .unwrap()
-                });
+            return overlap.into_iter().min_by(|a, b| {
+                ((*a as f64 - center).abs())
+                    .partial_cmp(&((*b as f64 - center).abs()))
+                    .unwrap()
+            });
         }
     }
     Some(finite[finite.len() / 2])
@@ -607,7 +441,9 @@ pub fn dealias_radial_es90(
     validate_nyquist(nyquist)?;
     if let Some(ref_field) = reference {
         if ref_field.len() != observed.len() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
 
@@ -615,7 +451,8 @@ pub fn dealias_radial_es90(
     let mut corrected = vec![f64::NAN; len];
     let mut confidence = vec![0.0f64; len];
     let reference_out = if let Some(ref_field) = reference {
-        ArrayD::from_shape_vec(IxDyn(&[len]), ref_field.iter().copied().collect()).expect("shape preserved")
+        ArrayD::from_shape_vec(IxDyn(&[len]), ref_field.iter().copied().collect())
+            .expect("shape preserved")
     } else {
         ArrayD::from_elem(IxDyn(&[len]), f64::NAN)
     };
@@ -628,7 +465,9 @@ pub fn dealias_radial_es90(
     if let Some(seed) = chosen_seed {
         let obs_seed = observed[seed];
         if !obs_seed.is_finite() {
-            return Err(DealiasError::ShapeMismatch("seed_index points to a non-finite gate"));
+            return Err(DealiasError::ShapeMismatch(
+                "seed_index points to a non-finite gate",
+            ));
         }
         if let Some(ref_field) = reference {
             let ref_seed = ref_field[seed];
@@ -644,12 +483,34 @@ pub fn dealias_radial_es90(
             confidence[seed] = 0.80;
         }
 
-        walk_radial(observed, nyquist, &mut corrected, &mut confidence, reference, seed, 1, max_gap, max_abs_step);
-        walk_radial(observed, nyquist, &mut corrected, &mut confidence, reference, seed, -1, max_gap, max_abs_step);
+        walk_radial(
+            observed,
+            nyquist,
+            &mut corrected,
+            &mut confidence,
+            reference,
+            seed,
+            1,
+            max_gap,
+            max_abs_step,
+        );
+        walk_radial(
+            observed,
+            nyquist,
+            &mut corrected,
+            &mut confidence,
+            reference,
+            seed,
+            -1,
+            max_gap,
+            max_abs_step,
+        );
     }
 
-    let corrected_array = ArrayD::from_shape_vec(IxDyn(&[len]), corrected).expect("shape preserved");
-    let confidence_array = ArrayD::from_shape_vec(IxDyn(&[len]), confidence).expect("shape preserved");
+    let corrected_array =
+        ArrayD::from_shape_vec(IxDyn(&[len]), corrected).expect("shape preserved");
+    let confidence_array =
+        ArrayD::from_shape_vec(IxDyn(&[len]), confidence).expect("shape preserved");
     let folds = fold_counts(corrected_array.view(), observed.into_dyn(), nyquist)?;
 
     Ok(Es90RadialResult {
@@ -671,7 +532,9 @@ pub fn dealias_sweep_es90(
     validate_nyquist(nyquist)?;
     if let Some(ref_field) = reference {
         if ref_field.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
 
@@ -682,8 +545,14 @@ pub fn dealias_sweep_es90(
     for row in 0..rows {
         let mut combined_ref = vec![f64::NAN; cols];
         for col in 0..cols {
-            let prev_value = if row > 0 { corrected[(row - 1, col)] } else { f64::NAN };
-            let ref_value = reference.map(|ref_field| ref_field[(row, col)]).unwrap_or(f64::NAN);
+            let prev_value = if row > 0 {
+                corrected[(row - 1, col)]
+            } else {
+                f64::NAN
+            };
+            let ref_value = reference
+                .map(|ref_field| ref_field[(row, col)])
+                .unwrap_or(f64::NAN);
             combined_ref[col] = match (prev_value.is_finite(), ref_value.is_finite()) {
                 (true, true) => 0.5 * (prev_value + ref_value),
                 (true, false) => prev_value,
@@ -691,17 +560,29 @@ pub fn dealias_sweep_es90(
                 (false, false) => f64::NAN,
             };
         }
-        let combined_ref_array = ArrayD::from_shape_vec(IxDyn(&[cols]), combined_ref).expect("shape preserved");
+        let combined_ref_array =
+            ArrayD::from_shape_vec(IxDyn(&[cols]), combined_ref).expect("shape preserved");
         let radial = dealias_radial_es90(
             observed.row(row),
             nyquist,
-            Some(combined_ref_array.view().into_dimensionality().expect("1d view")),
+            Some(
+                combined_ref_array
+                    .view()
+                    .into_dimensionality()
+                    .expect("1d view"),
+            ),
             None,
             max_gap,
             max_abs_step,
         )?;
-        let radial_velocity = radial.velocity.into_dimensionality::<ndarray::Ix1>().expect("1d");
-        let radial_confidence = radial.confidence.into_dimensionality::<ndarray::Ix1>().expect("1d");
+        let radial_velocity = radial
+            .velocity
+            .into_dimensionality::<ndarray::Ix1>()
+            .expect("1d");
+        let radial_confidence = radial
+            .confidence
+            .into_dimensionality::<ndarray::Ix1>()
+            .expect("1d");
         corrected.row_mut(row).assign(&radial_velocity);
         confidence.row_mut(row).assign(&radial_confidence);
     }
@@ -735,7 +616,9 @@ pub fn dealias_sweep_zw06(
     validate_nyquist(nyquist)?;
     if let Some(ref_field) = reference {
         if ref_field.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
 
@@ -755,7 +638,8 @@ pub fn dealias_sweep_zw06(
                     let mismatch = (candidate - ref_value).abs();
                     if mismatch <= 0.80 * nyquist {
                         corrected[(row, col)] = candidate;
-                        confidence[(row, col)] = gaussian_confidence_scalar(mismatch, 0.45 * nyquist);
+                        confidence[(row, col)] =
+                            gaussian_confidence_scalar(mismatch, 0.45 * nyquist);
                     }
                 }
             }
@@ -763,7 +647,8 @@ pub fn dealias_sweep_zw06(
     }
 
     let weak_threshold = weak_threshold_fraction * nyquist;
-    let texture_cut = quantile_linear(texture.iter().copied().collect(), 0.25).unwrap_or(weak_threshold);
+    let texture_cut =
+        quantile_linear(texture.iter().copied().collect(), 0.25).unwrap_or(weak_threshold);
     for row in 0..rows {
         for col in 0..cols {
             let unresolved = valid[(row, col)] && !corrected[(row, col)].is_finite();
@@ -842,7 +727,8 @@ pub fn dealias_sweep_zw06(
                     let mut combined_ref = neigh_ref[(row, col)];
                     if let Some(ref_field) = reference {
                         let ref_value = ref_field[(row, col)];
-                        let sparse = !combined_ref.is_finite() || neigh_count[(row, col)] < usize::max(2, min_neighbors);
+                        let sparse = !combined_ref.is_finite()
+                            || neigh_count[(row, col)] < usize::max(2, min_neighbors);
                         if sparse && ref_value.is_finite() {
                             combined_ref = ref_value;
                         }
@@ -862,7 +748,8 @@ pub fn dealias_sweep_zw06(
                     let mut enough_neighbors = neigh_count[(row, col)] >= min_neighbors;
                     if reference_only {
                         if let Some(ref_field) = reference {
-                            enough_neighbors = enough_neighbors || ref_field[(row, col)].is_finite();
+                            enough_neighbors =
+                                enough_neighbors || ref_field[(row, col)].is_finite();
                         }
                     }
                     if enough_neighbors && mismatch <= mismatch_fraction * nyquist {
@@ -912,7 +799,8 @@ pub fn dealias_sweep_zw06(
                     }
                 }
                 if let Some(neigh_median) = nanmedian_small(&values) {
-                    corrected[(row, col)] = unfold_scalar(observed[(row, col)], neigh_median, nyquist, 32);
+                    corrected[(row, col)] =
+                        unfold_scalar(observed[(row, col)], neigh_median, nyquist, 32);
                     confidence[(row, col)] = confidence[(row, col)].max(0.25);
                 }
             }
@@ -924,7 +812,10 @@ pub fn dealias_sweep_zw06(
             let mut cleanup_ref = Array2::from_elem((rows, cols), f64::NAN);
             for row in 0..rows {
                 for col in 0..cols {
-                    cleanup_ref[(row, col)] = match (corrected[(row, col)].is_finite(), ref_field[(row, col)].is_finite()) {
+                    cleanup_ref[(row, col)] = match (
+                        corrected[(row, col)].is_finite(),
+                        ref_field[(row, col)].is_finite(),
+                    ) {
                         (true, true) => 0.5 * (corrected[(row, col)] + ref_field[(row, col)]),
                         (true, false) => corrected[(row, col)],
                         (false, true) => ref_field[(row, col)],
@@ -933,11 +824,18 @@ pub fn dealias_sweep_zw06(
                 }
             }
             let radial = dealias_sweep_es90(observed, nyquist, Some(cleanup_ref.view()), 3, None)?;
-            corrected = radial.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
-            let radial_confidence = radial.confidence.into_dimensionality::<ndarray::Ix2>().expect("2d");
+            corrected = radial
+                .velocity
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2d");
+            let radial_confidence = radial
+                .confidence
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2d");
             for row in 0..rows {
                 for col in 0..cols {
-                    confidence[(row, col)] = confidence[(row, col)].max(radial_confidence[(row, col)]);
+                    confidence[(row, col)] =
+                        confidence[(row, col)].max(radial_confidence[(row, col)]);
                 }
             }
         }
@@ -946,13 +844,21 @@ pub fn dealias_sweep_zw06(
         let finite_folds: Vec<f64> = corrected
             .iter()
             .zip(fold_array.iter())
-            .filter_map(|(corrected_value, fold_value)| corrected_value.is_finite().then_some(*fold_value as f64))
+            .filter_map(|(corrected_value, fold_value)| {
+                corrected_value.is_finite().then_some(*fold_value as f64)
+            })
             .collect();
         if let Some(median_fold) = nanmedian_small(&finite_folds) {
             let shift = median_fold.round_ties_even() as i32;
             if shift != 0 {
                 let delta = 2.0 * nyquist * shift as f64;
-                corrected.mapv_inplace(|value| if value.is_finite() { value - delta } else { value });
+                corrected.mapv_inplace(|value| {
+                    if value.is_finite() {
+                        value - delta
+                    } else {
+                        value
+                    }
+                });
             }
         }
     }
@@ -960,7 +866,10 @@ pub fn dealias_sweep_zw06(
     let corrected_array = corrected.into_dyn();
     let folds = fold_counts(corrected_array.view(), observed.into_dyn(), nyquist)?;
     let seeded_gates = confidence.iter().filter(|value| **value >= 0.70).count();
-    let assigned_gates = corrected_array.iter().filter(|value| value.is_finite()).count();
+    let assigned_gates = corrected_array
+        .iter()
+        .filter(|value| value.is_finite())
+        .count();
     let reference_out = if let Some(ref_field) = reference {
         ref_field.to_owned().into_dyn()
     } else {
@@ -992,11 +901,15 @@ pub fn dealias_sweep_variational_refine(
 ) -> Result<VariationalResult> {
     validate_nyquist(nyquist)?;
     if initial_corrected.dim() != observed.dim() {
-        return Err(DealiasError::ShapeMismatch("initial_corrected must match observed shape"));
+        return Err(DealiasError::ShapeMismatch(
+            "initial_corrected must match observed shape",
+        ));
     }
     if let Some(ref_field) = reference {
         if ref_field.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
 
@@ -1059,11 +972,10 @@ pub fn dealias_sweep_variational_refine(
                         local_neighbors.push(value);
                     }
                 }
-                let local_ref = reference
-                    .and_then(|ref_field| {
-                        let value = ref_field[(row, col)];
-                        value.is_finite().then_some(value)
-                    });
+                let local_ref = reference.and_then(|ref_field| {
+                    let value = ref_field[(row, col)];
+                    value.is_finite().then_some(value)
+                });
                 let local_mean = {
                     let value = last_neigh_mean[(row, col)];
                     value.is_finite().then_some(value)
@@ -1128,7 +1040,10 @@ pub fn dealias_sweep_variational_refine(
             } else {
                 last_neigh_mean[(row, col)]
             };
-            confidence[(row, col)] = gaussian_confidence_scalar((corrected[(row, col)] - target_value).abs(), 0.45 * nyquist);
+            confidence[(row, col)] = gaussian_confidence_scalar(
+                (corrected[(row, col)] - target_value).abs(),
+                0.45 * nyquist,
+            );
         }
     }
 
@@ -1155,11 +1070,15 @@ pub fn dealias_dual_prf(
         return Err(DealiasError::InvalidMaxAbsFold(max_abs_fold));
     }
     if low.shape() != high.shape() {
-        return Err(DealiasError::ShapeMismatch("low and high observations must have the same shape"));
+        return Err(DealiasError::ShapeMismatch(
+            "low and high observations must have the same shape",
+        ));
     }
     if let Some(ref ref_field) = reference {
         if ref_field.shape() != low.shape() {
-            return Err(DealiasError::ShapeMismatch("reference must match the observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match the observed shape",
+            ));
         }
     }
 
@@ -1170,7 +1089,8 @@ pub fn dealias_dual_prf(
     let len = low.len();
     let low_values: Vec<f64> = low.iter().copied().collect();
     let high_values: Vec<f64> = high.iter().copied().collect();
-    let reference_values: Option<Vec<f64>> = reference.map(|ref_field| ref_field.iter().copied().collect());
+    let reference_values: Option<Vec<f64>> =
+        reference.map(|ref_field| ref_field.iter().copied().collect());
 
     let mut low_best = vec![f64::NAN; len];
     let mut high_best = vec![f64::NAN; len];
@@ -1320,7 +1240,8 @@ pub fn dealias_dual_prf(
 
     let combined_array = ArrayD::from_shape_vec(dim.clone(), combined).expect("shape preserved");
     let folds = fold_counts(combined_array.view(), low, low_nyquist)?;
-    let confidence_array = ArrayD::from_shape_vec(dim.clone(), confidence).expect("shape preserved");
+    let confidence_array =
+        ArrayD::from_shape_vec(dim.clone(), confidence).expect("shape preserved");
     let reference_out = if let Some(ref_values) = reference_values {
         ArrayD::from_shape_vec(dim.clone(), ref_values).expect("shape preserved")
     } else {
@@ -1364,7 +1285,10 @@ fn nanmedian_view2(view: ArrayView2<'_, f64>) -> Option<f64> {
     quantile_linear(values, 0.5)
 }
 
-fn choose_block_shape(shape: (usize, usize), block_shape: Option<(usize, usize)>) -> (usize, usize) {
+fn choose_block_shape(
+    shape: (usize, usize),
+    block_shape: Option<(usize, usize)>,
+) -> (usize, usize) {
     let (rows, cols) = shape;
     if let Some((br, bc)) = block_shape {
         return (br.max(1).min(rows), bc.max(1).min(cols));
@@ -1423,7 +1347,13 @@ fn add_region_edge(regions: &mut [RegionGraphRegion], a: usize, b: usize, weight
     }
 }
 
-fn region_median(view: ArrayView2<'_, f64>, row0: usize, row1: usize, col0: usize, col1: usize) -> Option<f64> {
+fn region_median(
+    view: ArrayView2<'_, f64>,
+    row0: usize,
+    row1: usize,
+    col0: usize,
+    col1: usize,
+) -> Option<f64> {
     let mut values = Vec::new();
     for row in row0..row1 {
         for col in col0..col1 {
@@ -1465,7 +1395,8 @@ fn build_region_graph(
             let region_id = regions.len();
             block_ids[(bi, bj)] = region_id as isize;
             let mean_obs = nanmedian_view2(block).unwrap_or(f64::NAN);
-            let mut texture = nanmedian_view2(texture_map.slice(ndarray::s![r0..r1, c0..c1])).unwrap_or(0.0);
+            let mut texture =
+                nanmedian_view2(texture_map.slice(ndarray::s![r0..r1, c0..c1])).unwrap_or(0.0);
             if !texture.is_finite() {
                 texture = 0.0;
             }
@@ -1529,8 +1460,16 @@ fn build_region_graph(
 
     if let Some(reference) = reference {
         for region in &mut regions {
-            if let Some(region_ref) = region_median(reference, region.row0, region.row1, region.col0, region.col1) {
-                region.texture = region.texture.max(0.5 * (region.mean_obs - region_ref).abs());
+            if let Some(region_ref) = region_median(
+                reference,
+                region.row0,
+                region.row1,
+                region.col0,
+                region.col1,
+            ) {
+                region.texture = region
+                    .texture
+                    .max(0.5 * (region.mean_obs - region_ref).abs());
             }
         }
     }
@@ -1538,7 +1477,10 @@ fn build_region_graph(
     Ok((regions, block_ids))
 }
 
-fn pick_seed_region(regions: &[RegionGraphRegion], reference: Option<ArrayView2<'_, f64>>) -> Option<usize> {
+fn pick_seed_region(
+    regions: &[RegionGraphRegion],
+    reference: Option<ArrayView2<'_, f64>>,
+) -> Option<usize> {
     if regions.is_empty() {
         return None;
     }
@@ -1547,8 +1489,15 @@ fn pick_seed_region(regions: &[RegionGraphRegion], reference: Option<ArrayView2<
     let mut best_score = f64::INFINITY;
     for (index, region) in regions.iter().enumerate() {
         let score = if let Some(reference) = reference {
-            if let Some(region_ref) = region_median(reference, region.row0, region.row1, region.col0, region.col1) {
-                (region.mean_obs - region_ref).abs() + 0.1 * region.texture - 0.01 * region.area as f64
+            if let Some(region_ref) = region_median(
+                reference,
+                region.row0,
+                region.row1,
+                region.col0,
+                region.col1,
+            ) {
+                (region.mean_obs - region_ref).abs() + 0.1 * region.texture
+                    - 0.01 * region.area as f64
             } else {
                 region.mean_obs.abs() + 0.1 * region.texture - 0.01 * region.area as f64
             }
@@ -1583,7 +1532,15 @@ fn best_fold_for_region(
         }
     }
 
-    let region_ref = reference.and_then(|reference| region_median(reference, region.row0, region.row1, region.col0, region.col1));
+    let region_ref = reference.and_then(|reference| {
+        region_median(
+            reference,
+            region.row0,
+            region.row1,
+            region.col0,
+            region.col1,
+        )
+    });
     let mut center = if !neighbor_means.is_empty() {
         let weight_sum: f64 = neighbor_weights.iter().sum::<f64>().max(1e-6);
         let target = neighbor_means
@@ -1631,7 +1588,11 @@ fn propagate_region_folds(
     reference_weight: f64,
     max_abs_fold: i16,
     max_iterations: usize,
-) -> (HashMap<usize, i16>, HashMap<usize, f64>, HashMap<usize, f64>) {
+) -> (
+    HashMap<usize, i16>,
+    HashMap<usize, f64>,
+    HashMap<usize, f64>,
+) {
     let mut fold_map: HashMap<usize, i16> = HashMap::new();
     let mut mean_map: HashMap<usize, f64> = HashMap::new();
     let mut score_map: HashMap<usize, f64> = HashMap::new();
@@ -1659,7 +1620,11 @@ fn propagate_region_folds(
             if fold_map.contains_key(neighbor_id) {
                 continue;
             }
-            if !regions[*neighbor_id].neighbors.iter().any(|parent| fold_map.contains_key(parent)) {
+            if !regions[*neighbor_id]
+                .neighbors
+                .iter()
+                .any(|parent| fold_map.contains_key(parent))
+            {
                 continue;
             }
             let (fold, mean, score) = best_fold_for_region(
@@ -1752,7 +1717,9 @@ fn expand_region_solution(
             }
         }
         let scale = f64::max(0.30 * nyquist, 1.0 + 0.12 * region.texture);
-        let conf = (-0.5 * (score / scale.max(1e-6)).powi(2)).exp().clamp(0.05, 0.99);
+        let conf = (-0.5 * (score / scale.max(1e-6)).powi(2))
+            .exp()
+            .clamp(0.05, 0.99);
         for row in region.row0..region.row1 {
             for col in region.col0..region.col1 {
                 confidence[(row, col)] = conf;
@@ -1800,7 +1767,12 @@ fn expand_region_solution(
             }
         }
     }
-    let corrected = unfold_to_reference(observed.into_dyn(), reference_field.view().into_dyn(), nyquist, 32)?;
+    let corrected = unfold_to_reference(
+        observed.into_dyn(),
+        reference_field.view().into_dyn(),
+        nyquist,
+        32,
+    )?;
     let mut corrected = corrected.into_dimensionality::<ndarray::Ix2>().expect("2d");
     for row in 0..rows {
         for col in 0..cols {
@@ -1814,7 +1786,8 @@ fn expand_region_solution(
         for row in 0..rows {
             for col in 0..cols {
                 let mismatch = (corrected[(row, col)] - reference_field[(row, col)]).abs();
-                confidence[(row, col)] = confidence[(row, col)].max(gaussian_confidence_scalar(mismatch, 0.40 * nyquist));
+                confidence[(row, col)] = confidence[(row, col)]
+                    .max(gaussian_confidence_scalar(mismatch, 0.40 * nyquist));
             }
         }
     }
@@ -1838,7 +1811,9 @@ pub fn dealias_sweep_region_graph(
     }
     if let Some(reference) = reference {
         if reference.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
 
@@ -1906,7 +1881,16 @@ pub fn dealias_sweep_region_graph(
     let regions_with_reference = if let Some(reference) = reference {
         regions
             .iter()
-            .filter(|region| region_median(reference, region.row0, region.row1, region.col0, region.col1).is_some())
+            .filter(|region| {
+                region_median(
+                    reference,
+                    region.row0,
+                    region.row1,
+                    region.col0,
+                    region.col1,
+                )
+                .is_some()
+            })
             .count()
     } else {
         0
@@ -1954,19 +1938,30 @@ fn axis_median_profile(block: ArrayView2<'_, f64>, axis: usize) -> Vec<f64> {
     if axis == 0 {
         let mut profile = Vec::with_capacity(rows);
         for row in 0..rows {
-            profile.push(nanmedian_view2(block.slice(ndarray::s![row..row + 1, ..])).unwrap_or(f64::NAN));
+            profile.push(
+                nanmedian_view2(block.slice(ndarray::s![row..row + 1, ..])).unwrap_or(f64::NAN),
+            );
         }
         profile
     } else {
         let mut profile = Vec::with_capacity(cols);
         for col in 0..cols {
-            profile.push(nanmedian_view2(block.slice(ndarray::s![.., col..col + 1])).unwrap_or(f64::NAN));
+            profile.push(
+                nanmedian_view2(block.slice(ndarray::s![.., col..col + 1])).unwrap_or(f64::NAN),
+            );
         }
         profile
     }
 }
 
-fn node_stats(observed: ArrayView2<'_, f64>, row0: usize, row1: usize, col0: usize, col1: usize, wrap_azimuth: bool) -> (f64, f64, usize) {
+fn node_stats(
+    observed: ArrayView2<'_, f64>,
+    row0: usize,
+    row1: usize,
+    col0: usize,
+    col1: usize,
+    wrap_azimuth: bool,
+) -> (f64, f64, usize) {
     let block = observed.slice(ndarray::s![row0..row1, col0..col1]);
     let texture_map = texture_3x3(block, wrap_azimuth).ok();
     let mean_obs = nanmedian_view2(block).unwrap_or(f64::NAN);
@@ -2001,7 +1996,12 @@ fn profile_energy(block: ArrayView2<'_, f64>, axis: usize, nyquist: f64) -> (f64
             best_idx = idx + 1;
         }
     }
-    let energy = nanmedian_view2(Array2::from_shape_vec((1, diffs.len()), diffs.clone()).expect("shape preserved").view()).unwrap_or(0.0);
+    let energy = nanmedian_view2(
+        Array2::from_shape_vec((1, diffs.len()), diffs.clone())
+            .expect("shape preserved")
+            .view(),
+    )
+    .unwrap_or(0.0);
     (energy, best_idx as isize)
 }
 
@@ -2015,7 +2015,14 @@ fn split_node(
     wrap_azimuth: bool,
 ) {
     let block = observed.slice(ndarray::s![node.row0..node.row1, node.col0..node.col1]);
-    let (mean_obs, texture, area) = node_stats(observed, node.row0, node.row1, node.col0, node.col1, wrap_azimuth);
+    let (mean_obs, texture, area) = node_stats(
+        observed,
+        node.row0,
+        node.row1,
+        node.col0,
+        node.col1,
+        wrap_azimuth,
+    );
     node.mean_obs = mean_obs;
     node.texture = texture;
     node.area = area;
@@ -2024,7 +2031,9 @@ fn split_node(
     if node.depth >= depth_limit || node.area <= min_leaf_cells || rows <= 2 || cols <= 2 {
         return;
     }
-    if node.texture <= split_texture_fraction * nyquist && usize::min(rows, cols) <= usize::max(6, usize::min(rows, cols) / 2) {
+    if node.texture <= split_texture_fraction * nyquist
+        && usize::min(rows, cols) <= usize::max(6, usize::min(rows, cols) / 2)
+    {
         return;
     }
 
@@ -2032,11 +2041,29 @@ fn split_node(
     let (col_energy, col_cut) = profile_energy(block, 1, nyquist);
     let mut axis = if row_energy >= col_energy { 0 } else { 1 };
     let mut cut = if axis == 0 { row_cut } else { col_cut };
-    if cut <= 0 || cut >= if axis == 0 { rows as isize } else { cols as isize } {
+    if cut <= 0
+        || cut
+            >= if axis == 0 {
+                rows as isize
+            } else {
+                cols as isize
+            }
+    {
         axis = 1 - axis;
         cut = if axis == 0 { row_cut } else { col_cut };
-        if cut <= 0 || cut >= if axis == 0 { rows as isize } else { cols as isize } {
-            cut = if axis == 0 { (rows / 2) as isize } else { (cols / 2) as isize };
+        if cut <= 0
+            || cut
+                >= if axis == 0 {
+                    rows as isize
+                } else {
+                    cols as isize
+                }
+        {
+            cut = if axis == 0 {
+                (rows / 2) as isize
+            } else {
+                (cols / 2) as isize
+            };
         }
     }
 
@@ -2044,11 +2071,15 @@ fn split_node(
         let mut split_row = node.row0 + cut as usize;
         let top = observed.slice(ndarray::s![node.row0..split_row, node.col0..node.col1]);
         let bottom = observed.slice(ndarray::s![split_row..node.row1, node.col0..node.col1]);
-        if top.iter().filter(|value| value.is_finite()).count() < min_leaf_cells || bottom.iter().filter(|value| value.is_finite()).count() < min_leaf_cells {
+        if top.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+            || bottom.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+        {
             split_row = node.row0 + rows / 2;
             let top = observed.slice(ndarray::s![node.row0..split_row, node.col0..node.col1]);
             let bottom = observed.slice(ndarray::s![split_row..node.row1, node.col0..node.col1]);
-            if top.iter().filter(|value| value.is_finite()).count() < min_leaf_cells || bottom.iter().filter(|value| value.is_finite()).count() < min_leaf_cells {
+            if top.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+                || bottom.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+            {
                 return;
             }
         }
@@ -2076,18 +2107,38 @@ fn split_node(
             children: Vec::new(),
             leaf_ids: Vec::new(),
         };
-        split_node(&mut top_node, observed, nyquist, depth_limit, min_leaf_cells, split_texture_fraction, wrap_azimuth);
-        split_node(&mut bottom_node, observed, nyquist, depth_limit, min_leaf_cells, split_texture_fraction, wrap_azimuth);
+        split_node(
+            &mut top_node,
+            observed,
+            nyquist,
+            depth_limit,
+            min_leaf_cells,
+            split_texture_fraction,
+            wrap_azimuth,
+        );
+        split_node(
+            &mut bottom_node,
+            observed,
+            nyquist,
+            depth_limit,
+            min_leaf_cells,
+            split_texture_fraction,
+            wrap_azimuth,
+        );
         node.children = vec![top_node, bottom_node];
     } else {
         let mut split_col = node.col0 + cut as usize;
         let left = observed.slice(ndarray::s![node.row0..node.row1, node.col0..split_col]);
         let right = observed.slice(ndarray::s![node.row0..node.row1, split_col..node.col1]);
-        if left.iter().filter(|value| value.is_finite()).count() < min_leaf_cells || right.iter().filter(|value| value.is_finite()).count() < min_leaf_cells {
+        if left.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+            || right.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+        {
             split_col = node.col0 + cols / 2;
             let left = observed.slice(ndarray::s![node.row0..node.row1, node.col0..split_col]);
             let right = observed.slice(ndarray::s![node.row0..node.row1, split_col..node.col1]);
-            if left.iter().filter(|value| value.is_finite()).count() < min_leaf_cells || right.iter().filter(|value| value.is_finite()).count() < min_leaf_cells {
+            if left.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+                || right.iter().filter(|value| value.is_finite()).count() < min_leaf_cells
+            {
                 return;
             }
         }
@@ -2115,8 +2166,24 @@ fn split_node(
             children: Vec::new(),
             leaf_ids: Vec::new(),
         };
-        split_node(&mut left_node, observed, nyquist, depth_limit, min_leaf_cells, split_texture_fraction, wrap_azimuth);
-        split_node(&mut right_node, observed, nyquist, depth_limit, min_leaf_cells, split_texture_fraction, wrap_azimuth);
+        split_node(
+            &mut left_node,
+            observed,
+            nyquist,
+            depth_limit,
+            min_leaf_cells,
+            split_texture_fraction,
+            wrap_azimuth,
+        );
+        split_node(
+            &mut right_node,
+            observed,
+            nyquist,
+            depth_limit,
+            min_leaf_cells,
+            split_texture_fraction,
+            wrap_azimuth,
+        );
         node.children = vec![left_node, right_node];
     }
 }
@@ -2143,13 +2210,20 @@ fn touches(a: &RegionGraphRegion, b: &RegionGraphRegion, rows: usize, wrap_azimu
     if a.row1 == b.row0 || b.row1 == a.row0 {
         return col_overlap > 0;
     }
-    if wrap_azimuth && rows > 1 && ((a.row0 == 0 && b.row1 == rows) || (b.row0 == 0 && a.row1 == rows)) {
+    if wrap_azimuth
+        && rows > 1
+        && ((a.row0 == 0 && b.row1 == rows) || (b.row0 == 0 && a.row1 == rows))
+    {
         return col_overlap > 0;
     }
     false
 }
 
-fn build_leaf_regions(leaves: &[RecursiveNode], rows: usize, wrap_azimuth: bool) -> Vec<RegionGraphRegion> {
+fn build_leaf_regions(
+    leaves: &[RecursiveNode],
+    rows: usize,
+    wrap_azimuth: bool,
+) -> Vec<RegionGraphRegion> {
     let mut regions = Vec::with_capacity(leaves.len());
     for (rid, leaf) in leaves.iter().enumerate() {
         regions.push(RegionGraphRegion {
@@ -2170,10 +2244,19 @@ fn build_leaf_regions(leaves: &[RecursiveNode], rows: usize, wrap_azimuth: bool)
             if !touches(&regions[i], &regions[j], rows, wrap_azimuth) {
                 continue;
             }
-            let weight = if regions[i].col1 == regions[j].col0 || regions[j].col1 == regions[i].col0 {
-                usize::max(1, usize::min(regions[i].row1, regions[j].row1) - usize::max(regions[i].row0, regions[j].row0))
+            let weight = if regions[i].col1 == regions[j].col0 || regions[j].col1 == regions[i].col0
+            {
+                usize::max(
+                    1,
+                    usize::min(regions[i].row1, regions[j].row1)
+                        - usize::max(regions[i].row0, regions[j].row0),
+                )
             } else {
-                usize::max(1, usize::min(regions[i].col1, regions[j].col1) - usize::max(regions[i].col0, regions[j].col0))
+                usize::max(
+                    1,
+                    usize::min(regions[i].col1, regions[j].col1)
+                        - usize::max(regions[i].col0, regions[j].col0),
+                )
             };
             add_region_edge(&mut regions, i, j, weight);
         }
@@ -2181,7 +2264,12 @@ fn build_leaf_regions(leaves: &[RecursiveNode], rows: usize, wrap_azimuth: bool)
     regions
 }
 
-fn leaf_mean(leaves: &[RecursiveNode], fold_map: &HashMap<usize, i16>, nyquist: f64, ids: &[usize]) -> f64 {
+fn leaf_mean(
+    leaves: &[RecursiveNode],
+    fold_map: &HashMap<usize, i16>,
+    nyquist: f64,
+    ids: &[usize],
+) -> f64 {
     let mut values = Vec::new();
     let mut weights = Vec::new();
     for lid in ids {
@@ -2195,13 +2283,25 @@ fn leaf_mean(leaves: &[RecursiveNode], fold_map: &HashMap<usize, i16>, nyquist: 
         return f64::NAN;
     }
     let weight_sum: f64 = weights.iter().sum::<f64>().max(1e-6);
-    values.iter().zip(weights.iter()).map(|(value, weight)| value * weight).sum::<f64>() / weight_sum
+    values
+        .iter()
+        .zip(weights.iter())
+        .map(|(value, weight)| value * weight)
+        .sum::<f64>()
+        / weight_sum
 }
 
-fn node_anchor(node: &RecursiveNode, leaves: &[RecursiveNode], fold_map: &HashMap<usize, i16>, nyquist: f64, reference: Option<ArrayView2<'_, f64>>) -> f64 {
+fn node_anchor(
+    node: &RecursiveNode,
+    leaves: &[RecursiveNode],
+    fold_map: &HashMap<usize, i16>,
+    nyquist: f64,
+    reference: Option<ArrayView2<'_, f64>>,
+) -> f64 {
     let child_mean = leaf_mean(leaves, fold_map, nyquist, &node.leaf_ids);
     if let Some(reference) = reference {
-        let ref_mean = region_median(reference, node.row0, node.row1, node.col0, node.col1).unwrap_or(f64::NAN);
+        let ref_mean = region_median(reference, node.row0, node.row1, node.col0, node.col1)
+            .unwrap_or(f64::NAN);
         let values = [child_mean, ref_mean];
         let mut finite = Vec::new();
         for value in values {
@@ -2237,7 +2337,12 @@ fn best_fold_from_targets(
 ) -> (i16, f64, f64) {
     let mut center = if !target_means.is_empty() {
         let weight_sum: f64 = target_weights.iter().sum::<f64>().max(1e-6);
-        let target = target_means.iter().zip(target_weights.iter()).map(|(mean, weight)| mean * weight).sum::<f64>() / weight_sum;
+        let target = target_means
+            .iter()
+            .zip(target_weights.iter())
+            .map(|(mean, weight)| mean * weight)
+            .sum::<f64>()
+            / weight_sum;
         ((target - mean_obs) / (2.0 * nyquist)).round_ties_even() as i16
     } else if let Some(ref_mean) = ref_mean {
         if ref_mean.is_finite() {
@@ -2290,13 +2395,39 @@ fn directional_refine(
     order.sort_by(|a, b| {
         let left = &leaves[*a];
         let right = &leaves[*b];
-        let primary_left = if axis == 1 { (left.col0 + left.col1) as f64 / 2.0 } else { (left.row0 + left.row1) as f64 / 2.0 };
-        let primary_right = if axis == 1 { (right.col0 + right.col1) as f64 / 2.0 } else { (right.row0 + right.row1) as f64 / 2.0 };
-        let secondary_left = if axis == 1 { (left.row0 + left.row1) as f64 / 2.0 } else { (left.col0 + left.col1) as f64 / 2.0 };
-        let secondary_right = if axis == 1 { (right.row0 + right.row1) as f64 / 2.0 } else { (right.col0 + right.col1) as f64 / 2.0 };
-        let ord = primary_left.partial_cmp(&primary_right).unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| secondary_left.partial_cmp(&secondary_right).unwrap_or(std::cmp::Ordering::Equal));
-        if reverse { ord.reverse() } else { ord }
+        let primary_left = if axis == 1 {
+            (left.col0 + left.col1) as f64 / 2.0
+        } else {
+            (left.row0 + left.row1) as f64 / 2.0
+        };
+        let primary_right = if axis == 1 {
+            (right.col0 + right.col1) as f64 / 2.0
+        } else {
+            (right.row0 + right.row1) as f64 / 2.0
+        };
+        let secondary_left = if axis == 1 {
+            (left.row0 + left.row1) as f64 / 2.0
+        } else {
+            (left.col0 + left.col1) as f64 / 2.0
+        };
+        let secondary_right = if axis == 1 {
+            (right.row0 + right.row1) as f64 / 2.0
+        } else {
+            (right.col0 + right.col1) as f64 / 2.0
+        };
+        let ord = primary_left
+            .partial_cmp(&primary_right)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                secondary_left
+                    .partial_cmp(&secondary_right)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if reverse {
+            ord.reverse()
+        } else {
+            ord
+        }
     });
 
     let mut changes = 0usize;
@@ -2335,16 +2466,20 @@ fn directional_refine(
                 continue;
             }
             let distance = if axis == 1 {
-                ((leaf.col0 + leaf.col1) as f64 / 2.0 - (other.col0 + other.col1) as f64 / 2.0).abs()
+                ((leaf.col0 + leaf.col1) as f64 / 2.0 - (other.col0 + other.col1) as f64 / 2.0)
+                    .abs()
             } else {
-                ((leaf.row0 + leaf.row1) as f64 / 2.0 - (other.row0 + other.row1) as f64 / 2.0).abs()
+                ((leaf.row0 + leaf.row1) as f64 / 2.0 - (other.row0 + other.row1) as f64 / 2.0)
+                    .abs()
             };
             let corrected = *mean_map.get(other_id).unwrap();
             target_means.push(corrected);
             target_weights.push((usize::max(1, overlap) as f64) / (1.0 + distance));
         }
 
-        let ref_mean = reference.and_then(|reference| region_median(reference, leaf.row0, leaf.row1, leaf.col0, leaf.col1));
+        let ref_mean = reference.and_then(|reference| {
+            region_median(reference, leaf.row0, leaf.row1, leaf.col0, leaf.col1)
+        });
         let (best_fold, best_mean, best_score) = best_fold_from_targets(
             leaf.mean_obs,
             &target_means,
@@ -2355,7 +2490,9 @@ fn directional_refine(
             max_abs_fold,
         );
         let current_fold = *fold_map.get(lid).unwrap_or(&0);
-        let current_mean = *mean_map.get(lid).unwrap_or(&(leaf.mean_obs + 2.0 * nyquist * f64::from(current_fold)));
+        let current_mean = *mean_map
+            .get(lid)
+            .unwrap_or(&(leaf.mean_obs + 2.0 * nyquist * f64::from(current_fold)));
         let current_score = best_fold_from_targets(
             leaf.mean_obs,
             &[current_mean],
@@ -2364,7 +2501,8 @@ fn directional_refine(
             nyquist,
             reference_weight,
             max_abs_fold,
-        ).2;
+        )
+        .2;
         if best_fold != current_fold && best_score + 1e-8 < current_score {
             fold_map.insert(*lid, best_fold);
             mean_map.insert(*lid, best_mean);
@@ -2374,7 +2512,13 @@ fn directional_refine(
     changes
 }
 
-fn refine_tree(node: &RecursiveNode, leaves: &[RecursiveNode], fold_map: &mut HashMap<usize, i16>, nyquist: f64, reference: Option<ArrayView2<'_, f64>>) -> usize {
+fn refine_tree(
+    node: &RecursiveNode,
+    leaves: &[RecursiveNode],
+    fold_map: &mut HashMap<usize, i16>,
+    nyquist: f64,
+    reference: Option<ArrayView2<'_, f64>>,
+) -> usize {
     if node.children.is_empty() {
         return 0;
     }
@@ -2387,7 +2531,10 @@ fn refine_tree(node: &RecursiveNode, leaves: &[RecursiveNode], fold_map: &mut Ha
                 continue;
             }
             let delta = ((anchor - child_mean) / (2.0 * nyquist)).round_ties_even() as i16;
-            if delta != 0 && (child_mean + 2.0 * nyquist * f64::from(delta) - anchor).abs() < (child_mean - anchor).abs() {
+            if delta != 0
+                && (child_mean + 2.0 * nyquist * f64::from(delta) - anchor).abs()
+                    < (child_mean - anchor).abs()
+            {
                 shift_subtree(child, fold_map, delta);
                 changes += 1;
             }
@@ -2409,30 +2556,34 @@ fn make_recursive_reference_field(
 ) -> Array2<f64> {
     let mut coarse = Array2::from_elem(observed.dim(), f64::NAN);
     for (lid, leaf) in leaves.iter().enumerate() {
-        let corrected_mean = leaf.mean_obs + 2.0 * nyquist * f64::from(*fold_map.get(&lid).unwrap_or(&0));
+        let corrected_mean =
+            leaf.mean_obs + 2.0 * nyquist * f64::from(*fold_map.get(&lid).unwrap_or(&0));
         for row in leaf.row0..leaf.row1 {
             for col in leaf.col0..leaf.col1 {
                 coarse[(row, col)] = corrected_mean;
             }
         }
     }
-    let smooth = neighbor_stack(coarse.view(), true, wrap_azimuth).ok().and_then(|stack| {
-        let (layers, rows, cols) = stack.dim();
-        let mut out = Array2::from_elem((rows, cols), f64::NAN);
-        for row in 0..rows {
-            for col in 0..cols {
-                let mut values = Vec::with_capacity(layers);
-                for layer in 0..layers {
-                    let value = stack[(layer, row, col)];
-                    if value.is_finite() {
-                        values.push(value);
+    let smooth = neighbor_stack(coarse.view(), true, wrap_azimuth)
+        .ok()
+        .and_then(|stack| {
+            let (layers, rows, cols) = stack.dim();
+            let mut out = Array2::from_elem((rows, cols), f64::NAN);
+            for row in 0..rows {
+                for col in 0..cols {
+                    let mut values = Vec::with_capacity(layers);
+                    for layer in 0..layers {
+                        let value = stack[(layer, row, col)];
+                        if value.is_finite() {
+                            values.push(value);
+                        }
                     }
+                    out[(row, col)] = quantile_linear(values, 0.5).unwrap_or(f64::NAN);
                 }
-                out[(row, col)] = quantile_linear(values, 0.5).unwrap_or(f64::NAN);
             }
-        }
-        Some(out)
-    }).unwrap_or_else(|| Array2::from_elem(observed.dim(), f64::NAN));
+            Some(out)
+        })
+        .unwrap_or_else(|| Array2::from_elem(observed.dim(), f64::NAN));
     let mut reference_field = Array2::from_elem(observed.dim(), f64::NAN);
     for row in 0..observed.nrows() {
         for col in 0..observed.ncols() {
@@ -2459,7 +2610,12 @@ fn make_recursive_reference_field(
     reference_field
 }
 
-fn solution_cost(candidate: ArrayView2<'_, f64>, observed: ArrayView2<'_, f64>, reference: Option<ArrayView2<'_, f64>>, nyquist: f64) -> f64 {
+fn solution_cost(
+    candidate: ArrayView2<'_, f64>,
+    observed: ArrayView2<'_, f64>,
+    reference: Option<ArrayView2<'_, f64>>,
+    nyquist: f64,
+) -> f64 {
     let mut valid = 0usize;
     let mut continuity_sum = 0.0f64;
     if candidate.ncols() >= 2 {
@@ -2467,7 +2623,11 @@ fn solution_cost(candidate: ArrayView2<'_, f64>, observed: ArrayView2<'_, f64>, 
             for col in 1..candidate.ncols() {
                 let a = candidate[(row, col)];
                 let b = candidate[(row, col - 1)];
-                if a.is_finite() && b.is_finite() && observed[(row, col)].is_finite() && observed[(row, col - 1)].is_finite() {
+                if a.is_finite()
+                    && b.is_finite()
+                    && observed[(row, col)].is_finite()
+                    && observed[(row, col - 1)].is_finite()
+                {
                     continuity_sum += wrap_scalar(a - b, nyquist).abs();
                     valid += 1;
                 }
@@ -2479,7 +2639,11 @@ fn solution_cost(candidate: ArrayView2<'_, f64>, observed: ArrayView2<'_, f64>, 
             for col in 0..candidate.ncols() {
                 let a = candidate[(row, col)];
                 let b = candidate[(row - 1, col)];
-                if a.is_finite() && b.is_finite() && observed[(row, col)].is_finite() && observed[(row - 1, col)].is_finite() {
+                if a.is_finite()
+                    && b.is_finite()
+                    && observed[(row, col)].is_finite()
+                    && observed[(row - 1, col)].is_finite()
+                {
                     continuity_sum += wrap_scalar(a - b, nyquist).abs();
                     valid += 1;
                 }
@@ -2531,12 +2695,23 @@ pub fn dealias_sweep_recursive(
     }
     if let Some(reference) = reference {
         if reference.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
 
     let (rows, cols) = observed.dim();
-    let bootstrap = dealias_sweep_region_graph(observed, nyquist, reference, None, 0.75, 6, max_abs_fold, wrap_azimuth)?;
+    let bootstrap = dealias_sweep_region_graph(
+        observed,
+        nyquist,
+        reference,
+        None,
+        0.75,
+        6,
+        max_abs_fold,
+        wrap_azimuth,
+    )?;
     let RegionGraphResult {
         velocity: bootstrap_velocity_dyn,
         folds: bootstrap_folds_dyn,
@@ -2544,7 +2719,10 @@ pub fn dealias_sweep_recursive(
         region_count: bootstrap_region_count,
         ..
     } = bootstrap;
-    let bootstrap_velocity = bootstrap_velocity_dyn.into_dimensionality::<ndarray::Ix2>().expect("2d").to_owned();
+    let bootstrap_velocity = bootstrap_velocity_dyn
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d")
+        .to_owned();
     let bootstrap_reference = if let Some(reference) = reference {
         let mut combined = Array2::from_elem((rows, cols), f64::NAN);
         for row in 0..rows {
@@ -2581,7 +2759,15 @@ pub fn dealias_sweep_recursive(
         children: Vec::new(),
         leaf_ids: Vec::new(),
     };
-    split_node(&mut root, observed, nyquist, max_depth, min_leaf_cells, split_texture_fraction, wrap_azimuth);
+    split_node(
+        &mut root,
+        observed,
+        nyquist,
+        max_depth,
+        min_leaf_cells,
+        split_texture_fraction,
+        wrap_azimuth,
+    );
     let mut leaves = Vec::new();
     collect_leaves(&mut root, &mut leaves);
     let mut regions = build_leaf_regions(&leaves, rows, wrap_azimuth);
@@ -2624,7 +2810,14 @@ pub fn dealias_sweep_recursive(
     }
 
     for _ in 0..2 {
-        if refine_tree(&root, &leaves, &mut fold_map, nyquist, bootstrap_reference.as_ref().map(|field| field.view())) == 0 {
+        if refine_tree(
+            &root,
+            &leaves,
+            &mut fold_map,
+            nyquist,
+            bootstrap_reference.as_ref().map(|field| field.view()),
+        ) == 0
+        {
             break;
         }
     }
@@ -2633,7 +2826,10 @@ pub fn dealias_sweep_recursive(
         regions[lid].mean_obs = leaf.mean_obs;
         regions[lid].texture = leaf.texture;
         regions[lid].area = leaf.area;
-        mean_map.insert(lid, leaf.mean_obs + 2.0 * nyquist * f64::from(*fold_map.get(&lid).unwrap_or(&0)));
+        mean_map.insert(
+            lid,
+            leaf.mean_obs + 2.0 * nyquist * f64::from(*fold_map.get(&lid).unwrap_or(&0)),
+        );
         score_map.entry(lid).or_insert(0.0);
     }
 
@@ -2645,9 +2841,14 @@ pub fn dealias_sweep_recursive(
         bootstrap_reference.as_ref().map(|field| field.view()),
         wrap_azimuth,
     );
-    let corrected = unfold_to_reference(observed.into_dyn(), reference_field.view().into_dyn(), nyquist, 32)?
-        .into_dimensionality::<ndarray::Ix2>()
-        .expect("2d");
+    let corrected = unfold_to_reference(
+        observed.into_dyn(),
+        reference_field.view().into_dyn(),
+        nyquist,
+        32,
+    )?
+    .into_dimensionality::<ndarray::Ix2>()
+    .expect("2d");
     let mut corrected = corrected;
     for row in 0..rows {
         for col in 0..cols {
@@ -2669,29 +2870,48 @@ pub fn dealias_sweep_recursive(
             } else {
                 reference_field[(row, col)]
             };
-            confidence[(row, col)] = gaussian_confidence_scalar((corrected[(row, col)] - target).abs(), 0.38 * nyquist);
+            confidence[(row, col)] =
+                gaussian_confidence_scalar((corrected[(row, col)] - target).abs(), 0.38 * nyquist);
         }
     }
     let folds = fold_counts(corrected.view().into_dyn(), observed.into_dyn(), nyquist)?;
-    let recursive_cost = solution_cost(corrected.view(), observed, bootstrap_reference.as_ref().map(|field| field.view()), nyquist);
-    let bootstrap_cost = solution_cost(bootstrap_velocity.view(), observed, bootstrap_reference.as_ref().map(|field| field.view()), nyquist);
-    let (final_velocity, final_folds, final_confidence, method) = if recursive_cost > bootstrap_cost + 1e-8 {
-        (
-            bootstrap_velocity,
-            bootstrap_folds_dyn.into_dimensionality::<ndarray::Ix2>().expect("2d").to_owned(),
-            bootstrap_confidence_dyn.into_dimensionality::<ndarray::Ix2>().expect("2d").to_owned(),
-            "recursive_region_refinement_fallback_region_graph",
-        )
-    } else {
-        (
-            corrected,
-            folds.into_dimensionality::<ndarray::Ix2>().expect("2d"),
-            confidence,
-            "recursive_region_refinement",
-        )
-    };
+    let recursive_cost = solution_cost(
+        corrected.view(),
+        observed,
+        bootstrap_reference.as_ref().map(|field| field.view()),
+        nyquist,
+    );
+    let bootstrap_cost = solution_cost(
+        bootstrap_velocity.view(),
+        observed,
+        bootstrap_reference.as_ref().map(|field| field.view()),
+        nyquist,
+    );
+    let (final_velocity, final_folds, final_confidence, method) =
+        if recursive_cost > bootstrap_cost + 1e-8 {
+            (
+                bootstrap_velocity,
+                bootstrap_folds_dyn
+                    .into_dimensionality::<ndarray::Ix2>()
+                    .expect("2d")
+                    .to_owned(),
+                bootstrap_confidence_dyn
+                    .into_dimensionality::<ndarray::Ix2>()
+                    .expect("2d")
+                    .to_owned(),
+                "recursive_region_refinement_fallback_region_graph",
+            )
+        } else {
+            (
+                corrected,
+                folds.into_dimensionality::<ndarray::Ix2>().expect("2d"),
+                confidence,
+                "recursive_region_refinement",
+            )
+        };
 
-    let final_reference = bootstrap_reference.unwrap_or_else(|| Array2::from_elem((rows, cols), f64::NAN));
+    let final_reference =
+        bootstrap_reference.unwrap_or_else(|| Array2::from_elem((rows, cols), f64::NAN));
     Ok(RecursiveResult {
         velocity: final_velocity.into_dyn(),
         folds: final_folds.into_dyn(),
@@ -2711,9 +2931,15 @@ pub fn dealias_sweep_recursive(
 
 fn resolve_volume_nyquist(nyquist: &[f64], n_sweeps: usize) -> Result<Vec<f64>> {
     if nyquist.len() != n_sweeps {
-        return Err(DealiasError::ShapeMismatch("nyquist must be scalar-expanded to length n_sweeps"));
+        return Err(DealiasError::ShapeMismatch(
+            "nyquist must be scalar-expanded to length n_sweeps",
+        ));
     }
-    if let Some(value) = nyquist.iter().copied().find(|value| !value.is_finite() || *value <= 0.0) {
+    if let Some(value) = nyquist
+        .iter()
+        .copied()
+        .find(|value| !value.is_finite() || *value <= 0.0)
+    {
         return Err(DealiasError::InvalidNyquist(value));
     }
     Ok(nyquist.to_vec())
@@ -2723,7 +2949,10 @@ fn count_finite_2d(field: ArrayView2<'_, f64>) -> usize {
     field.iter().filter(|value| value.is_finite()).count()
 }
 
-fn choose_seed_sweep(observed: ArrayView3<'_, f64>, reference_volume: Option<ArrayView3<'_, f64>>) -> usize {
+fn choose_seed_sweep(
+    observed: ArrayView3<'_, f64>,
+    reference_volume: Option<ArrayView3<'_, f64>>,
+) -> usize {
     let n_sweeps = observed.len_of(Axis(0));
     let center = n_sweeps / 2;
     let valid_counts: Vec<usize> = (0..n_sweeps)
@@ -2743,7 +2972,13 @@ fn choose_seed_sweep(observed: ArrayView3<'_, f64>, reference_volume: Option<Arr
 
     if valid_counts.iter().any(|value| *value > 0) {
         let mut ranked: Vec<usize> = (0..n_sweeps).collect();
-        ranked.sort_by_key(|&sweep| (std::cmp::Reverse(valid_counts[sweep]), sweep.abs_diff(center), sweep));
+        ranked.sort_by_key(|&sweep| {
+            (
+                std::cmp::Reverse(valid_counts[sweep]),
+                sweep.abs_diff(center),
+                sweep,
+            )
+        });
         return ranked[0];
     }
 
@@ -2815,7 +3050,9 @@ fn fold_counts_volume(
     nyquist: &[f64],
 ) -> Result<ArrayD<i16>> {
     if corrected.dim() != observed.dim() {
-        return Err(DealiasError::ShapeMismatch("corrected and observed must match"));
+        return Err(DealiasError::ShapeMismatch(
+            "corrected and observed must match",
+        ));
     }
     let (n_sweeps, rows, cols) = corrected.dim();
     let nyq = resolve_volume_nyquist(nyquist, n_sweeps)?;
@@ -2850,7 +3087,9 @@ pub fn dealias_volume_3d(
     let nyq = resolve_volume_nyquist(nyquist, n_sweeps)?;
     if let Some(reference_volume) = reference_volume.as_ref() {
         if reference_volume.dim() != observed_volume.dim() {
-            return Err(DealiasError::ShapeMismatch("reference_volume must match observed_volume shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference_volume must match observed_volume shape",
+            ));
         }
     }
 
@@ -2865,7 +3104,9 @@ pub fn dealias_volume_3d(
     let seed = choose_seed_sweep(observed_volume, reference_volume);
     let seed_obs = observed_volume.index_axis(Axis(0), seed);
     per_sweep_valid_gates[seed] = count_finite_2d(seed_obs);
-    let seed_ref = reference_volume.as_ref().map(|field| field.index_axis(Axis(0), seed));
+    let seed_ref = reference_volume
+        .as_ref()
+        .map(|field| field.index_axis(Axis(0), seed));
     let seed_result = match seed_ref {
         Some(ref_field) => dealias_sweep_zw06(
             seed_obs,
@@ -2888,12 +3129,27 @@ pub fn dealias_volume_3d(
             true,
         )?,
     };
-    let seed_velocity = seed_result.velocity.into_dimensionality::<ndarray::Ix2>().expect("seed result is 2D");
-    let seed_confidence = seed_result.confidence.into_dimensionality::<ndarray::Ix2>().expect("seed result is 2D");
-    let seed_reference = seed_result.reference.into_dimensionality::<ndarray::Ix2>().expect("seed result is 2D");
-    corrected.index_axis_mut(Axis(0), seed).assign(&seed_velocity);
-    confidence.index_axis_mut(Axis(0), seed).assign(&seed_confidence);
-    reference.index_axis_mut(Axis(0), seed).assign(&seed_reference);
+    let seed_velocity = seed_result
+        .velocity
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("seed result is 2D");
+    let seed_confidence = seed_result
+        .confidence
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("seed result is 2D");
+    let seed_reference = seed_result
+        .reference
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("seed result is 2D");
+    corrected
+        .index_axis_mut(Axis(0), seed)
+        .assign(&seed_velocity);
+    confidence
+        .index_axis_mut(Axis(0), seed)
+        .assign(&seed_confidence);
+    reference
+        .index_axis_mut(Axis(0), seed)
+        .assign(&seed_reference);
     per_sweep_seeded_gates[seed] = seed_result.seeded_gates;
     per_sweep_assigned_gates[seed] = seed_result.assigned_gates;
     per_sweep_iterations_used[seed] = seed_result.iterations_used;
@@ -2903,16 +3159,23 @@ pub fn dealias_volume_3d(
     let mut iterations_used = 1usize;
 
     for iteration in 0..max_iterations {
-        let current_order = if iteration % 2 == 0 { &order } else { &reverse_order };
+        let current_order = if iteration % 2 == 0 {
+            &order
+        } else {
+            &reverse_order
+        };
         let mut changed = 0usize;
         for &sweep in current_order {
             let obs_slice = observed_volume.index_axis(Axis(0), sweep);
             per_sweep_valid_gates[sweep] = count_finite_2d(obs_slice);
 
-            let current_reference = sweep_reference_field(corrected.view(), sweep, reference_volume)
-                .or_else(|| {
+            let current_reference =
+                sweep_reference_field(corrected.view(), sweep, reference_volume).or_else(|| {
                     let current = corrected.index_axis(Axis(0), sweep);
-                    current.iter().any(|value| value.is_finite()).then_some(current.to_owned())
+                    current
+                        .iter()
+                        .any(|value| value.is_finite())
+                        .then_some(current.to_owned())
                 });
             if current_reference.is_none() && !obs_slice.iter().any(|value| value.is_finite()) {
                 continue;
@@ -2941,8 +3204,14 @@ pub fn dealias_volume_3d(
                 )?,
             };
 
-            let result_velocity = result.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
-            let result_confidence = result.confidence.into_dimensionality::<ndarray::Ix2>().expect("2d");
+            let result_velocity = result
+                .velocity
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2d");
+            let result_confidence = result
+                .confidence
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2d");
 
             let current_slice = corrected.index_axis(Axis(0), sweep);
             for row in 0..rows {
@@ -2961,7 +3230,9 @@ pub fn dealias_volume_3d(
                     }
                 }
             }
-            corrected.index_axis_mut(Axis(0), sweep).assign(&result_velocity);
+            corrected
+                .index_axis_mut(Axis(0), sweep)
+                .assign(&result_velocity);
             for row in 0..rows {
                 for col in 0..cols {
                     let updated = result_confidence[(row, col)];
@@ -3005,7 +3276,9 @@ pub fn dealias_volume_3d(
                     }
                 }
             }
-            corrected.index_axis_mut(Axis(0), sweep).assign(&filled_sweep);
+            corrected
+                .index_axis_mut(Axis(0), sweep)
+                .assign(&filled_sweep);
             for row in 0..rows {
                 for col in 0..cols {
                     let mismatch = (filled_sweep[(row, col)] - sweep_reference[(row, col)]).abs();
@@ -3016,7 +3289,9 @@ pub fn dealias_volume_3d(
                 }
             }
         } else {
-            corrected.index_axis_mut(Axis(0), sweep).assign(&sweep_reference);
+            corrected
+                .index_axis_mut(Axis(0), sweep)
+                .assign(&sweep_reference);
             for row in 0..rows {
                 for col in 0..cols {
                     let updated = gaussian_confidence_scalar(0.0, 0.45 * nyq[sweep]);
@@ -3152,7 +3427,12 @@ fn solve_linear_system(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec
     Some(x)
 }
 
-fn least_squares_three_column(x1: &[f64], x2: &[f64], y: &[f64], keep: &[bool]) -> Option<[f64; 3]> {
+fn least_squares_three_column(
+    x1: &[f64],
+    x2: &[f64],
+    y: &[f64],
+    keep: &[bool],
+) -> Option<[f64; 3]> {
     let mut xtx = vec![0.0f64; 9];
     let mut xty = vec![0.0f64; 3];
     let mut used = 0usize;
@@ -3179,7 +3459,10 @@ fn least_squares_three_column(x1: &[f64], x2: &[f64], y: &[f64], keep: &[bool]) 
     solve_linear_system(xtx, xty, 3).map(|beta| [beta[0], beta[1], beta[2]])
 }
 
-fn gate_stats_2d(field: ArrayView2<'_, f64>, observed: ArrayView2<'_, f64>) -> (usize, usize, usize, f64) {
+fn gate_stats_2d(
+    field: ArrayView2<'_, f64>,
+    observed: ArrayView2<'_, f64>,
+) -> (usize, usize, usize, f64) {
     let (rows, cols) = observed.dim();
     let mut valid = 0usize;
     let mut assigned = 0usize;
@@ -3194,11 +3477,18 @@ fn gate_stats_2d(field: ArrayView2<'_, f64>, observed: ArrayView2<'_, f64>) -> (
         }
     }
     let unresolved = valid.saturating_sub(assigned);
-    let resolved_fraction = if valid > 0 { assigned as f64 / valid as f64 } else { 0.0 };
+    let resolved_fraction = if valid > 0 {
+        assigned as f64 / valid as f64
+    } else {
+        0.0
+    };
     (valid, assigned, unresolved, resolved_fraction)
 }
 
-fn gate_stats_3d(field: ArrayView3<'_, f64>, observed: ArrayView3<'_, f64>) -> (usize, usize, usize, f64) {
+fn gate_stats_3d(
+    field: ArrayView3<'_, f64>,
+    observed: ArrayView3<'_, f64>,
+) -> (usize, usize, usize, f64) {
     let (sweeps, rows, cols) = observed.dim();
     let mut valid = 0usize;
     let mut assigned = 0usize;
@@ -3215,11 +3505,19 @@ fn gate_stats_3d(field: ArrayView3<'_, f64>, observed: ArrayView3<'_, f64>) -> (
         }
     }
     let unresolved = valid.saturating_sub(assigned);
-    let resolved_fraction = if valid > 0 { assigned as f64 / valid as f64 } else { 0.0 };
+    let resolved_fraction = if valid > 0 {
+        assigned as f64 / valid as f64
+    } else {
+        0.0
+    };
     (valid, assigned, unresolved, resolved_fraction)
 }
 
-fn fold_counts_by_sweep(corrected: ArrayView3<'_, f64>, observed: ArrayView3<'_, f64>, nyquist: &[f64]) -> Result<ArrayD<i16>> {
+fn fold_counts_by_sweep(
+    corrected: ArrayView3<'_, f64>,
+    observed: ArrayView3<'_, f64>,
+    nyquist: &[f64],
+) -> Result<ArrayD<i16>> {
     let (sweeps, rows, cols) = corrected.dim();
     let mut out = Array3::from_elem((sweeps, rows, cols), 0i16);
     let nyq = resolve_volume_nyquist(nyquist, sweeps)?;
@@ -3248,7 +3546,9 @@ pub fn estimate_uniform_wind_vad(
 ) -> Result<VadFitResult> {
     validate_nyquist(nyquist)?;
     if observed.dim().0 != azimuth_deg.len() {
-        return Err(DealiasError::ShapeMismatch("azimuth_deg must match observed.shape[0]"));
+        return Err(DealiasError::ShapeMismatch(
+            "azimuth_deg must match observed.shape[0]",
+        ));
     }
 
     let (rows, cols) = observed.dim();
@@ -3363,10 +3663,16 @@ pub fn estimate_uniform_wind_vad(
 
     for iteration in 1..=max_iterations {
         iterations_done = iteration;
-        let reference = build_reference_from_uv_core(azimuth_deg, cols, u, v, elevation_deg, offset, sign);
-        let unfolded = unfold_to_reference(observed.into_dyn(), reference.view().into_dyn(), nyquist, 32)?
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("2d");
+        let reference =
+            build_reference_from_uv_core(azimuth_deg, cols, u, v, elevation_deg, offset, sign);
+        let unfolded = unfold_to_reference(
+            observed.into_dyn(),
+            reference.view().into_dyn(),
+            nyquist,
+            32,
+        )?
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
         let y = nanmedian_rows(unfolded.view());
         let valid: Vec<bool> = y.iter().map(|value| value.is_finite()).collect();
         if valid.iter().filter(|keep| **keep).count() < 8 {
@@ -3421,7 +3727,10 @@ pub fn estimate_uniform_wind_vad(
         let new_u = final_beta[0];
         let new_v = final_beta[1];
         let new_offset = final_beta[2];
-        let delta = (new_u - u).abs().max((new_v - v).abs()).max((new_offset - offset).abs());
+        let delta = (new_u - u)
+            .abs()
+            .max((new_v - v).abs())
+            .max((new_offset - offset).abs());
         u = new_u;
         v = new_v;
         offset = new_offset;
@@ -3430,7 +3739,8 @@ pub fn estimate_uniform_wind_vad(
         }
     }
 
-    let reference = build_reference_from_uv_core(azimuth_deg, cols, u, v, elevation_deg, offset, sign);
+    let reference =
+        build_reference_from_uv_core(azimuth_deg, cols, u, v, elevation_deg, offset, sign);
     Ok(VadFitResult {
         u,
         v,
@@ -3452,16 +3762,33 @@ pub fn dealias_sweep_xu11(
 ) -> Result<Xu11Result> {
     validate_nyquist(nyquist)?;
     if observed.dim().0 != azimuth_deg.len() {
-        return Err(DealiasError::ShapeMismatch("azimuth_deg must match observed.shape[0]"));
+        return Err(DealiasError::ShapeMismatch(
+            "azimuth_deg must match observed.shape[0]",
+        ));
     }
     if let Some(reference) = external_reference {
         if reference.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("external_reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "external_reference must match observed shape",
+            ));
         }
     }
 
-    let fit = estimate_uniform_wind_vad(observed, nyquist, azimuth_deg, elevation_deg, sign, 6, 0.85, None)?;
-    let fit_reference = fit.reference.clone().into_dimensionality::<ndarray::Ix2>().expect("2d");
+    let fit = estimate_uniform_wind_vad(
+        observed,
+        nyquist,
+        azimuth_deg,
+        elevation_deg,
+        sign,
+        6,
+        0.85,
+        None,
+    )?;
+    let fit_reference = fit
+        .reference
+        .clone()
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
     let combined_reference = if let Some(reference) = external_reference {
         let mut combined = Array2::from_elem(fit_reference.dim(), f64::NAN);
         for row in 0..fit_reference.dim().0 {
@@ -3484,9 +3811,14 @@ pub fn dealias_sweep_xu11(
     };
 
     if !refine_with_multipass {
-        let corrected = unfold_to_reference(observed.into_dyn(), combined_reference.view().into_dyn(), nyquist, 32)?
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("2d");
+        let corrected = unfold_to_reference(
+            observed.into_dyn(),
+            combined_reference.view().into_dyn(),
+            nyquist,
+            32,
+        )?
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
         let mut confidence = Array2::from_elem(observed.dim(), 0.0f64);
         for row in 0..observed.dim().0 {
             for col in 0..observed.dim().1 {
@@ -3547,12 +3879,16 @@ pub fn dealias_sweep_jh01(
     validate_nyquist(nyquist)?;
     if let Some(previous) = previous_corrected {
         if previous.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("previous_corrected must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "previous_corrected must match observed shape",
+            ));
         }
     }
     if let Some(background) = background_reference {
         if background.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("background_reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "background_reference must match observed shape",
+            ));
         }
     }
 
@@ -3585,13 +3921,20 @@ pub fn dealias_sweep_jh01(
     } else if let Some(background) = background_reference {
         background.to_owned()
     } else {
-        return Err(DealiasError::ShapeMismatch("previous_corrected or background_reference is required"));
+        return Err(DealiasError::ShapeMismatch(
+            "previous_corrected or background_reference is required",
+        ));
     };
 
     if !refine_with_multipass {
-        let corrected = unfold_to_reference(observed.into_dyn(), reference.view().into_dyn(), nyquist, 32)?
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("2d");
+        let corrected = unfold_to_reference(
+            observed.into_dyn(),
+            reference.view().into_dyn(),
+            nyquist,
+            32,
+        )?
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
         let mut confidence = Array2::from_elem(observed.dim(), 0.0f64);
         for row in 0..observed.dim().0 {
             for col in 0..observed.dim().1 {
@@ -3625,8 +3968,14 @@ pub fn dealias_sweep_jh01(
         true,
         true,
     )?;
-    let velocity = result.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
-    let confidence = result.confidence.into_dimensionality::<ndarray::Ix2>().expect("2d");
+    let velocity = result
+        .velocity
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
+    let confidence = result
+        .confidence
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
     let stats = gate_stats_2d(velocity.view(), observed);
     Ok(Jh01SweepResult {
         velocity: velocity.into_dyn(),
@@ -3656,24 +4005,34 @@ pub fn dealias_volume_jh01(
     let (n_sweeps, rows, cols) = observed_volume.dim();
     let nyq = resolve_volume_nyquist(nyquist, n_sweeps)?;
     if elevation_deg.len() != n_sweeps {
-        return Err(DealiasError::ShapeMismatch("elevation_deg must have one value per sweep"));
+        return Err(DealiasError::ShapeMismatch(
+            "elevation_deg must have one value per sweep",
+        ));
     }
     if azimuth_deg.len() != rows {
-        return Err(DealiasError::ShapeMismatch("azimuth_deg must match observed.shape[1]"));
+        return Err(DealiasError::ShapeMismatch(
+            "azimuth_deg must match observed.shape[1]",
+        ));
     }
     if let Some(previous) = previous_volume {
         if previous.dim() != observed_volume.dim() {
-            return Err(DealiasError::ShapeMismatch("previous_volume must match observed_volume shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "previous_volume must match observed_volume shape",
+            ));
         }
     }
     if let Some(values) = background_u {
         if values.len() != n_sweeps {
-            return Err(DealiasError::ShapeMismatch("background_u must match n_sweeps"));
+            return Err(DealiasError::ShapeMismatch(
+                "background_u must match n_sweeps",
+            ));
         }
     }
     if let Some(values) = background_v {
         if values.len() != n_sweeps {
-            return Err(DealiasError::ShapeMismatch("background_v must match n_sweeps"));
+            return Err(DealiasError::ShapeMismatch(
+                "background_v must match n_sweeps",
+            ));
         }
     }
 
@@ -3718,7 +4077,8 @@ pub fn dealias_volume_jh01(
         let previous_combined = if previous_refs.is_empty() {
             None
         } else {
-            let views: Vec<ArrayView2<'_, f64>> = previous_refs.iter().map(|field| field.view()).collect();
+            let views: Vec<ArrayView2<'_, f64>> =
+                previous_refs.iter().map(|field| field.view()).collect();
             combine_reference_fields_2d(&views)
         };
 
@@ -3732,9 +4092,18 @@ pub fn dealias_volume_jh01(
             wrap_azimuth,
             true,
         )?;
-        let velocity = result.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
-        let conf = result.confidence.into_dimensionality::<ndarray::Ix2>().expect("2d");
-        let ref_field = result.reference.into_dimensionality::<ndarray::Ix2>().expect("2d");
+        let velocity = result
+            .velocity
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
+        let conf = result
+            .confidence
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
+        let ref_field = result
+            .reference
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
         corrected.index_axis_mut(Axis(0), sweep).assign(&velocity);
         confidence.index_axis_mut(Axis(0), sweep).assign(&conf);
         reference.index_axis_mut(Axis(0), sweep).assign(&ref_field);
@@ -3792,12 +4161,16 @@ fn build_ml_feature_arrays(
     let (rows, cols) = observed.dim();
     if let Some(reference) = reference {
         if reference.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
     if let Some(azimuth) = azimuth_deg {
         if azimuth.len() != rows {
-            return Err(DealiasError::ShapeMismatch("azimuth_deg must have length n_azimuth"));
+            return Err(DealiasError::ShapeMismatch(
+                "azimuth_deg must have length n_azimuth",
+            ));
         }
     }
 
@@ -3826,10 +4199,18 @@ fn build_ml_feature_arrays(
     let mut row_frac = Array2::from_elem((rows, cols), 0.0f64);
     let mut col_frac = Array2::from_elem((rows, cols), 0.0f64);
     for row in 0..rows {
-        let row_value = if rows > 1 { row as f64 / (rows - 1) as f64 } else { 0.0 };
+        let row_value = if rows > 1 {
+            row as f64 / (rows - 1) as f64
+        } else {
+            0.0
+        };
         for col in 0..cols {
             row_frac[(row, col)] = row_value;
-            col_frac[(row, col)] = if cols > 1 { col as f64 / (cols - 1) as f64 } else { 0.0 };
+            col_frac[(row, col)] = if cols > 1 {
+                col as f64 / (cols - 1) as f64
+            } else {
+                0.0
+            };
         }
     }
     features.push(row_frac);
@@ -3852,7 +4233,9 @@ fn build_ml_feature_arrays(
     }
 
     let ref_feature = if let Some(reference) = reference {
-        reference.to_owned().mapv(|value| if value.is_finite() { value } else { 0.0 })
+        reference
+            .to_owned()
+            .mapv(|value| if value.is_finite() { value } else { 0.0 })
     } else {
         Array2::from_elem((rows, cols), 0.0f64)
     };
@@ -3870,7 +4253,9 @@ pub fn fit_ml_reference_model(
     ridge: f64,
 ) -> Result<MlModelState> {
     if target_velocity.dim() != observed.dim() {
-        return Err(DealiasError::ShapeMismatch("observed and target_velocity must be 2D with the same shape"));
+        return Err(DealiasError::ShapeMismatch(
+            "observed and target_velocity must be 2D with the same shape",
+        ));
     }
     let (features, names) = build_ml_feature_arrays(observed, reference, azimuth_deg)?;
     let p = features.len();
@@ -3906,12 +4291,16 @@ pub fn fit_ml_reference_model(
         }
     }
     if sample_count < p {
-        return Err(DealiasError::ShapeMismatch("not enough finite training gates to fit ML reference model"));
+        return Err(DealiasError::ShapeMismatch(
+            "not enough finite training gates to fit ML reference model",
+        ));
     }
     for diag in 0..p {
         xtx[diag * p + diag] += reg;
     }
-    let weights = solve_linear_system(xtx, xty, p).ok_or(DealiasError::ShapeMismatch("unable to solve ML ridge system"))?;
+    let weights = solve_linear_system(xtx, xty, p).ok_or(DealiasError::ShapeMismatch(
+        "unable to solve ML ridge system",
+    ))?;
 
     let mut mse_sum = 0.0f64;
     let mut mse_count = 0usize;
@@ -3936,13 +4325,21 @@ pub fn fit_ml_reference_model(
             mse_count += 1;
         }
     }
-    let rmse = if mse_count > 0 { (mse_sum / mse_count as f64).sqrt() } else { 0.0 };
+    let rmse = if mse_count > 0 {
+        (mse_sum / mse_count as f64).sqrt()
+    } else {
+        0.0
+    };
     Ok(MlModelState {
         weights,
         feature_names: names,
         ridge: reg,
         train_rmse: rmse,
-        mode: if nyquist.is_some() { "fold".to_string() } else { "velocity".to_string() },
+        mode: if nyquist.is_some() {
+            "fold".to_string()
+        } else {
+            "velocity".to_string()
+        },
         nyquist,
     })
 }
@@ -3955,7 +4352,9 @@ fn predict_ml_reference(
 ) -> Result<Array2<f64>> {
     let (features, names) = build_ml_feature_arrays(observed, reference, azimuth_deg)?;
     if names != model.feature_names {
-        return Err(DealiasError::ShapeMismatch("feature set does not match the supplied model"));
+        return Err(DealiasError::ShapeMismatch(
+            "feature set does not match the supplied model",
+        ));
     }
     let (rows, cols) = observed.dim();
     let mut out = Array2::from_elem((rows, cols), 0.0f64);
@@ -3966,7 +4365,9 @@ fn predict_ml_reference(
                 pred += features[idx][(row, col)] * model.weights[idx];
             }
             if model.mode == "fold" {
-                let nyq = model.nyquist.ok_or(DealiasError::ShapeMismatch("fold model is missing nyquist"))?;
+                let nyq = model
+                    .nyquist
+                    .ok_or(DealiasError::ShapeMismatch("fold model is missing nyquist"))?;
                 out[(row, col)] = observed[(row, col)] + 2.0 * nyq * pred.round_ties_even();
             } else {
                 out[(row, col)] = pred;
@@ -3989,12 +4390,16 @@ pub fn dealias_sweep_ml(
     validate_nyquist(nyquist)?;
     if let Some(reference) = reference {
         if reference.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("reference must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "reference must match observed shape",
+            ));
         }
     }
     if let Some(target) = training_target {
         if target.dim() != observed.dim() {
-            return Err(DealiasError::ShapeMismatch("training_target must match observed shape"));
+            return Err(DealiasError::ShapeMismatch(
+                "training_target must match observed shape",
+            ));
         }
     }
 
@@ -4003,19 +4408,37 @@ pub fn dealias_sweep_ml(
     } else if let Some(target) = training_target {
         (
             "training_target".to_string(),
-            fit_ml_reference_model(observed, target, Some(nyquist), reference, azimuth_deg, ridge)?,
+            fit_ml_reference_model(
+                observed,
+                target,
+                Some(nyquist),
+                reference,
+                azimuth_deg,
+                ridge,
+            )?,
         )
     } else if let Some(reference_field) = reference {
-        let target = unfold_to_reference(observed.into_dyn(), reference_field.into_dyn(), nyquist, 32)?
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("2d");
+        let target =
+            unfold_to_reference(observed.into_dyn(), reference_field.into_dyn(), nyquist, 32)?
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2d");
         (
             "reference_pseudo_target".to_string(),
-            fit_ml_reference_model(observed, target.view(), Some(nyquist), reference, azimuth_deg, ridge)?,
+            fit_ml_reference_model(
+                observed,
+                target.view(),
+                Some(nyquist),
+                reference,
+                azimuth_deg,
+                ridge,
+            )?,
         )
     } else {
         let region = dealias_sweep_region_graph(observed, nyquist, None, None, 0.75, 6, 8, true)?;
-        let initial = region.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
+        let initial = region
+            .velocity
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
         let bootstrap = dealias_sweep_variational_refine(
             observed,
             initial.view(),
@@ -4028,23 +4451,41 @@ pub fn dealias_sweep_ml(
             8,
             true,
         )?;
-        let target = bootstrap.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
+        let target = bootstrap
+            .velocity
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
         (
             "variational_pseudo_target".to_string(),
-            fit_ml_reference_model(observed, target.view(), Some(nyquist), None, azimuth_deg, ridge)?,
+            fit_ml_reference_model(
+                observed,
+                target.view(),
+                Some(nyquist),
+                None,
+                azimuth_deg,
+                ridge,
+            )?,
         )
     };
 
     let predicted_reference = predict_ml_reference(observed, &model_state, reference, azimuth_deg)?;
-    let mut corrected = unfold_to_reference(observed.into_dyn(), predicted_reference.view().into_dyn(), nyquist, 32)?
-        .into_dimensionality::<ndarray::Ix2>()
-        .expect("2d");
+    let mut corrected = unfold_to_reference(
+        observed.into_dyn(),
+        predicted_reference.view().into_dyn(),
+        nyquist,
+        32,
+    )?
+    .into_dimensionality::<ndarray::Ix2>()
+    .expect("2d");
     let (rows, cols) = observed.dim();
     let mut confidence = Array2::from_elem((rows, cols), 0.0f64);
     for row in 0..rows {
         for col in 0..cols {
             if observed[(row, col)].is_finite() {
-                confidence[(row, col)] = gaussian_confidence_scalar((corrected[(row, col)] - predicted_reference[(row, col)]).abs(), 0.50 * nyquist);
+                confidence[(row, col)] = gaussian_confidence_scalar(
+                    (corrected[(row, col)] - predicted_reference[(row, col)]).abs(),
+                    0.50 * nyquist,
+                );
             } else {
                 corrected[(row, col)] = f64::NAN;
             }
@@ -4055,8 +4496,20 @@ pub fn dealias_sweep_ml(
     let mut refine_method = None;
     let mut refine_iterations = None;
     if refine_with_variational {
-        let bootstrap = dealias_sweep_region_graph(observed, nyquist, Some(predicted_reference.view()), None, 0.75, 6, 8, true)?;
-        let initial = bootstrap.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
+        let bootstrap = dealias_sweep_region_graph(
+            observed,
+            nyquist,
+            Some(predicted_reference.view()),
+            None,
+            0.75,
+            6,
+            8,
+            true,
+        )?;
+        let initial = bootstrap
+            .velocity
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
         let refined = dealias_sweep_variational_refine(
             observed,
             initial.view(),
@@ -4069,8 +4522,14 @@ pub fn dealias_sweep_ml(
             8,
             true,
         )?;
-        corrected = refined.velocity.into_dimensionality::<ndarray::Ix2>().expect("2d");
-        let refined_confidence = refined.confidence.into_dimensionality::<ndarray::Ix2>().expect("2d");
+        corrected = refined
+            .velocity
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
+        let refined_confidence = refined
+            .confidence
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d");
         for row in 0..rows {
             for col in 0..cols {
                 if refined_confidence[(row, col)] > confidence[(row, col)] {
@@ -4104,9 +4563,33 @@ mod tests {
 
     #[test]
     fn wrap_matches_nyquist_semantics() {
-        let velocity = array![-31.0, -10.0, -0.0, 0.0, 9.999, 10.0, 29.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY].into_dyn();
+        let velocity = array![
+            -31.0,
+            -10.0,
+            -0.0,
+            0.0,
+            9.999,
+            10.0,
+            29.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY
+        ]
+        .into_dyn();
         let wrapped = wrap_to_nyquist(velocity.view(), 10.0).unwrap();
-        let expected = array![9.0, -10.0, 0.0, 0.0, 9.999, -10.0, 9.5, f64::NAN, f64::NAN, f64::NAN].into_dyn();
+        let expected = array![
+            9.0,
+            -10.0,
+            0.0,
+            0.0,
+            9.999,
+            -10.0,
+            9.5,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN
+        ]
+        .into_dyn();
         assert_eq!(wrapped.shape(), expected.shape());
         for (actual, expected) in wrapped.iter().zip(expected.iter()) {
             if expected.is_nan() {
@@ -4144,7 +4627,11 @@ mod tests {
     fn shift2d_matches_roll_and_nan_fill() {
         let field = array![[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]];
         let shifted = shift2d(field.view(), 1, -1, false).unwrap();
-        let expected = array![[f64::NAN, f64::NAN, f64::NAN], [1.0, 2.0, f64::NAN], [4.0, 5.0, f64::NAN]];
+        let expected = array![
+            [f64::NAN, f64::NAN, f64::NAN],
+            [1.0, 2.0, f64::NAN],
+            [4.0, 5.0, f64::NAN]
+        ];
         for (actual, expected) in shifted.iter().zip(expected.iter()) {
             if expected.is_nan() {
                 assert!(actual.is_nan());
@@ -4157,13 +4644,29 @@ mod tests {
     #[test]
     fn shift3d_applies_slice_by_slice() {
         let volume = array![
-            [[0.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0]],
-            [[12.0, 13.0, 14.0, 15.0], [16.0, 17.0, 18.0, 19.0], [20.0, 21.0, 22.0, 23.0]]
+            [
+                [0.0, 1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0, 7.0],
+                [8.0, 9.0, 10.0, 11.0]
+            ],
+            [
+                [12.0, 13.0, 14.0, 15.0],
+                [16.0, 17.0, 18.0, 19.0],
+                [20.0, 21.0, 22.0, 23.0]
+            ]
         ];
         let shifted = shift3d(volume.view(), -1, 1, true).unwrap();
         let expected = array![
-            [[f64::NAN, 4.0, 5.0, 6.0], [f64::NAN, 8.0, 9.0, 10.0], [f64::NAN, 0.0, 1.0, 2.0]],
-            [[f64::NAN, 16.0, 17.0, 18.0], [f64::NAN, 20.0, 21.0, 22.0], [f64::NAN, 12.0, 13.0, 14.0]]
+            [
+                [f64::NAN, 4.0, 5.0, 6.0],
+                [f64::NAN, 8.0, 9.0, 10.0],
+                [f64::NAN, 0.0, 1.0, 2.0]
+            ],
+            [
+                [f64::NAN, 16.0, 17.0, 18.0],
+                [f64::NAN, 20.0, 21.0, 22.0],
+                [f64::NAN, 12.0, 13.0, 14.0]
+            ]
         ];
         assert_eq!(shifted.shape(), expected.shape());
         for (actual, expected) in shifted.iter().zip(expected.iter()) {
@@ -4180,7 +4683,8 @@ mod tests {
         let truth = array![-26.0, -14.0, -2.0, 11.0, 23.0, 35.0].into_dyn();
         let low = wrap_to_nyquist(truth.view(), 10.0).unwrap();
         let high = wrap_to_nyquist(truth.view(), 16.0).unwrap();
-        let result = dealias_dual_prf(low.view(), high.view(), 10.0, 16.0, Some(truth.view()), 32).unwrap();
+        let result =
+            dealias_dual_prf(low.view(), high.view(), 10.0, 16.0, Some(truth.view()), 32).unwrap();
 
         assert_eq!(result.paired_gates, truth.len());
         for (actual, expected) in result.velocity.iter().zip(truth.iter()) {
@@ -4276,25 +4780,17 @@ mod tests {
     #[test]
     fn volume3d_recovers_reference_volume() {
         let truth = array![
-            [
-                [-26.0, -14.0, -2.0],
-                [11.0, 23.0, 35.0]
-            ],
-            [
-                [-8.0, 4.0, 16.0],
-                [28.0, 40.0, 52.0]
-            ],
-            [
-                [-20.0, -8.0, 4.0],
-                [16.0, 28.0, 40.0]
-            ]
+            [[-26.0, -14.0, -2.0], [11.0, 23.0, 35.0]],
+            [[-8.0, 4.0, 16.0], [28.0, 40.0, 52.0]],
+            [[-20.0, -8.0, 4.0], [16.0, 28.0, 40.0]]
         ];
         let observed = wrap_to_nyquist(truth.view().into_dyn(), 10.0)
             .unwrap()
             .into_dimensionality::<ndarray::Ix3>()
             .unwrap();
         let nyquist = [10.0, 10.0, 10.0];
-        let result = dealias_volume_3d(observed.view(), &nyquist, Some(truth.view()), true, 4).unwrap();
+        let result =
+            dealias_volume_3d(observed.view(), &nyquist, Some(truth.view()), true, 4).unwrap();
 
         assert_eq!(result.seed_sweep, 0);
         assert_eq!(result.sweep_order, vec![0, 1, 2]);
@@ -4305,18 +4801,9 @@ mod tests {
         assert_eq!(result.iterations_used, 4);
 
         let expected_velocity = array![
-            [
-                [-26.0, -14.0, -2.0],
-                [-9.0, 3.0, -5.0]
-            ],
-            [
-                [-8.0, 4.0, -4.0],
-                [8.0, 20.0, 12.0]
-            ],
-            [
-                [-20.0, -8.0, 4.0],
-                [-4.0, 8.0, 0.0]
-            ]
+            [[-26.0, -14.0, -2.0], [-9.0, 3.0, -5.0]],
+            [[-8.0, 4.0, -4.0], [8.0, 20.0, 12.0]],
+            [[-20.0, -8.0, 4.0], [-4.0, 8.0, 0.0]]
         ];
         let expected_folds = array![
             [[-1i16, -1, 0], [0, 0, 0]],

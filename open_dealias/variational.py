@@ -5,7 +5,8 @@ import warnings
 import numpy as np
 
 from ._core import as_float_array, fold_counts, gaussian_confidence, neighbor_stack, unfold_to_reference
-from ._rust_bridge import get_rust_backend
+from .result_state import attach_result_state_from_fields
+from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .region_graph import dealias_sweep_region_graph
 from .types import DealiasResult
 
@@ -52,12 +53,17 @@ def dealias_sweep_variational(
 
     valid = np.isfinite(obs)
     if not np.any(valid):
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.full(obs.shape, np.nan, dtype=float),
             folds=np.zeros(obs.shape, dtype=np.int16),
             confidence=np.zeros(obs.shape, dtype=float),
             reference=ref,
             metadata={"paper_family": "VariationalLite", "method": "coordinate_descent", "iterations_used": 0},
+            ),
+            obs,
+            source="coordinate_descent",
+            parent="VariationalLite",
         )
 
     bootstrap = dealias_sweep_region_graph(obs, nyquist, reference=ref, wrap_azimuth=wrap_azimuth)
@@ -67,8 +73,9 @@ def dealias_sweep_variational(
         corrected = bootstrap.velocity.copy()
     corrected = np.where(valid, corrected, np.nan)
 
-    if _NATIVE_BACKEND is not None:
-        velocity, folds, confidence, metadata = _NATIVE_BACKEND.dealias_sweep_variational_refine(
+    backend = resolve_rust_backend(_NATIVE_BACKEND)
+    if backend is not None:
+        velocity, folds, confidence, metadata = backend.dealias_sweep_variational_refine(
             obs,
             corrected,
             float(nyquist),
@@ -82,12 +89,18 @@ def dealias_sweep_variational(
         )
         meta = dict(metadata)
         meta["bootstrap_method"] = bootstrap.metadata.get("method")
-        return DealiasResult(
+        return attach_result_state_from_fields(
+            DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
             folds=np.asarray(folds, dtype=np.int16),
             confidence=np.asarray(confidence, dtype=float),
             reference=ref,
             metadata=meta,
+            ),
+            obs,
+            source=str(meta.get("method", "coordinate_descent")),
+            parent=str(meta.get("paper_family", "VariationalLite")),
+            notes=(f"bootstrap_method={bootstrap.metadata.get('method')}",),
         )
 
     folds = fold_counts(corrected, obs, nyquist).astype(int)
@@ -141,7 +154,8 @@ def dealias_sweep_variational(
     mismatch = np.abs(corrected - target)
     confidence = np.where(valid, gaussian_confidence(mismatch, 0.45 * nyquist), 0.0)
 
-    return DealiasResult(
+    return attach_result_state_from_fields(
+        DealiasResult(
         velocity=corrected,
         folds=folds.astype(np.int16),
         confidence=confidence,
@@ -155,4 +169,9 @@ def dealias_sweep_variational(
             "wrap_azimuth": bool(wrap_azimuth),
             "bootstrap_method": bootstrap.metadata.get("method"),
         },
+        ),
+        obs,
+        source="coordinate_descent",
+        parent="VariationalLite",
+        notes=(f"bootstrap_method={bootstrap.metadata.get('method')}",),
     )
