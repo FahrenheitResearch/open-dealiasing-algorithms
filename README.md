@@ -27,9 +27,10 @@ closed-source products.
 ## What is implemented
 
 The current Python package, `open_dealias`, exposes paper-mapped reference
-implementations for the main public families that kept recurring across the
-uploaded summaries and public references. The names below are family labels,
-not claims that each function is a standalone, paper-faithful solver.
+implementations for the main public families that recur across the public
+literature, operational references, and open-source implementations. The names
+below are family labels, not claims that each function is a standalone,
+paper-faithful solver.
 
 Core solvers and core solver families:
 
@@ -82,8 +83,7 @@ The strongest public trail behind this repo is:
 - Py-ART `dealias_region_based` and `dealias_fourdd`
 - newer open descendants such as UNRAVEL and R2D2
 
-See [docs/likely_papers_from_uploads.md](docs/likely_papers_from_uploads.md) and
-[docs/paper_map.md](docs/paper_map.md).
+See [docs/paper_map.md](docs/paper_map.md).
 
 ## Repo layout
 
@@ -91,8 +91,6 @@ See [docs/likely_papers_from_uploads.md](docs/likely_papers_from_uploads.md) and
 open-dealiasing-algorithms/
 |-- README.md
 |-- EVALUATION.md
-|-- REPO_SELECTION.md
-|-- MERGE_MAP.md
 |-- Cargo.toml
 |-- pyproject.toml
 |-- setup.py
@@ -102,7 +100,6 @@ open-dealiasing-algorithms/
 |   |-- app-comparison-framework.md
 |   |-- bibliography.md
 |   |-- implementation-notes.md
-|   |-- likely_papers_from_uploads.md
 |   |-- paper_map.md
 |   `-- test-cases.md
 |-- open_dealias/
@@ -308,10 +305,9 @@ one of:
 - `observable behavior / inference`
 - `unknown / cannot verify`
 
-That is deliberate. For products like GR2, RadarScope, RadarOmega, or the user
-shorthand "Yalldar", the public algorithm details are often incomplete or absent.
-This repo treats undocumented internals as unknown unless stronger evidence
-exists.
+That is deliberate. For commercial radar products, the public algorithm details
+are often incomplete or absent. This repo treats undocumented internals as
+unknown unless stronger evidence exists.
 
 ## What is still missing
 
@@ -326,16 +322,6 @@ This is a strong open baseline, not a finished operational stack. It still lacks
 Several high-level solvers also still favor "fill the field" behavior over a
 fully conservative unresolved-state model. That is a design choice in this repo
 today, not a claim that the unresolved problem is solved.
-
-## Provenance
-
-This final repo was built by auditing multiple candidate repos and a standalone
-`open-dealias-lib` package. The docs spine comes from the stricter
-`central-best` candidate, while the executable library core and JS port come
-from `open-dealias-lib`.
-
-See [REPO_SELECTION.md](REPO_SELECTION.md) for the candidate ranking and
-[MERGE_MAP.md](MERGE_MAP.md) for the final merge map.
 
 ## License
 

@@ -2,8 +2,6 @@
 
 This document is intentionally cautious. The point is to make **black-box app comparisons more rigorous** without pretending that undocumented internals are known.
 
-Naming note: the user shorthand **“Yalldar”** is not a formally verified product name in the public sources reviewed for this repository. If a comparison needs to interpret that term as **WeatherWise / Y’all Mode**, treat that mapping itself as an interpretation, not a documented fact.
-
 ## 1. Why comparison is tricky
 
 A radar app can display a dealiased velocity field without telling you:
@@ -148,22 +146,7 @@ A small repeatable stress-test set is often more informative than a large pile o
 | Example app | None | Unknown | Low | Black-box comparison only |
 | Open reference implementation | Fully documented | Region-based + reference velocity | High | Behavior traceable to source code |
 
-## 9. Example comparison entries for this repo
-
-These entries are deliberately conservative.
-
-| System or app | Public algorithm disclosure | Likely method family | Confidence | Notes |
-| --- | --- | --- | --- | --- |
-| GR2Analyst | **public documentation:** user-facing dealias controls are documented in public training material; an older public guide mentions an undefined “AE algorithm” and sounding-assisted options. | **unknown / cannot verify:** exact method not publicly specified. **observable behavior / hypothesis:** continuity plus some environmental assistance would be plausible, but this repo does not assert that as fact. | Low for family inference; high for the existence of user-facing controls | Supported claims stop at public controls and public wording. Treat exact internals as unknown unless stronger vendor documentation appears. |
-| Yalldar | **unknown / cannot verify:** no public algorithm disclosure was located in this repository's research pass. | Unknown | Very low | Compare by outputs only. Do not claim a specific internal method without documentation. |
-| WeatherWise / Y’all Mode *(if this is what users mean by “Yalldar”)* | **unknown / cannot verify:** no verified public dealias-method disclosure was located in the material reviewed for this repo. | Unknown | Very low | The mapping from “Yalldar” to this product name should itself be treated as an interpretation unless the user or a public source makes it explicit. |
-| RadarScope | **unknown / cannot verify:** no public algorithm disclosure was located in the material reviewed for this repo. | Unknown | Very low | Output differences may reflect upstream products, smoothing, masking, or unresolved-gate policy rather than a uniquely identifiable dealias core. |
-| RadarOmega | **unknown / cannot verify:** no public algorithm disclosure was located in the material reviewed for this repo. | Unknown | Very low | Same caution as above. Black-box tests may still characterize behavior, but not prove internals. |
-| Py-ART `dealias_region_based` | **public documentation:** open API docs and source identify a region-based algorithm that unfolds and merges velocity regions. | 2D region-based / graph-style regional continuity | High | Strong open baseline for comparison. |
-| Py-ART `dealias_fourdd` | **public documentation:** open API docs identify a 4DD approach using a previous volume and/or sounding. | Temporal continuity / previous-volume / reference-assisted | High | Useful baseline for time-aware behavior. |
-| WSR-88D 2DVDA product chain | **public documentation:** public ROC documentation identifies 2DVDA as the default algorithm for WSR-88D Level 3 elevation-based velocity products. | 2D connected-region / continuity + background-wind-assisted operational algorithm | High | Public operational reference, but not equivalent to any commercial app by default. |
-
-## 10. A defensible writeup style
+## 9. A defensible writeup style
 
 When writing app comparisons, prefer language like:
 
@@ -177,7 +160,7 @@ Avoid language like:
 - “This proves the app uses AI.”
 - “This is obviously a clone of 2DVDA.”
 
-## 11. Recommended black-box experiment checklist
+## 10. Recommended black-box experiment checklist
 
 1. Save the raw source volume.
 2. Note radar, VCP, Nyquist velocity, sweep, and time.
@@ -190,7 +173,7 @@ Avoid language like:
 9. Keep a log of all settings.
 10. Distinguish documented fact from inference in the writeup.
 
-## 12. Bottom line
+## 11. Bottom line
 
 A fair app comparison does not need secret knowledge. It needs:
 
