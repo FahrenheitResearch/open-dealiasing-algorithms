@@ -34,8 +34,19 @@ function parseMetadataJson(value: unknown): Record<string, unknown> {
   }
 }
 
+function maybeFree(raw: Record<string, unknown>): void {
+  const free = raw.free;
+  if (typeof free === "function") {
+    try {
+      free.call(raw);
+    } catch {
+      // Ignore finalizer/free errors from non-owning shims.
+    }
+  }
+}
+
 function normalizeSweepResult(raw: Record<string, unknown>): PackedDealiasResult {
-  return {
+  const result = {
     velocity: raw.velocity instanceof Float64Array ? raw.velocity : new Float64Array(raw.velocity as ArrayLike<number>),
     folds: raw.folds instanceof Int16Array ? raw.folds : Int16Array.from(raw.folds as ArrayLike<number>),
     confidence: raw.confidence instanceof Float32Array ? raw.confidence : Float32Array.from(raw.confidence as ArrayLike<number>),
@@ -43,10 +54,12 @@ function normalizeSweepResult(raw: Record<string, unknown>): PackedDealiasResult
     gateCount: Number(raw.cols),
     metadata: parseMetadataJson(raw.metadata_json),
   };
+  maybeFree(raw);
+  return result;
 }
 
 function normalizeVolumeResult(raw: Record<string, unknown>): PackedVolumeDealiasResult {
-  return {
+  const result = {
     velocity: raw.velocity instanceof Float64Array ? raw.velocity : new Float64Array(raw.velocity as ArrayLike<number>),
     folds: raw.folds instanceof Int16Array ? raw.folds : Int16Array.from(raw.folds as ArrayLike<number>),
     confidence: raw.confidence instanceof Float32Array ? raw.confidence : Float32Array.from(raw.confidence as ArrayLike<number>),
@@ -55,6 +68,8 @@ function normalizeVolumeResult(raw: Record<string, unknown>): PackedVolumeDealia
     gateCount: Number(raw.cols),
     metadata: parseMetadataJson(raw.metadata_json),
   };
+  maybeFree(raw);
+  return result;
 }
 
 function normalizeNyquist(nyquist: number | ArrayLike<number>, sweepCount: number): number[] {
