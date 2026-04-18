@@ -1,7 +1,7 @@
 use crate::common::{
-    array_to_vec_f64, array_to_vec_i16, js_error, metadata_json, optional_2d, optional_3d,
-    require_1d, require_2d, require_3d, resolve_nyquist_per_sweep, FlatDealiasResult2D,
-    FlatDealiasResult3D,
+    array_to_vec_f32, array_to_vec_f64, array_to_vec_i16, js_error, metadata_json, optional_2d,
+    optional_3d, require_1d, require_2d, require_3d, resolve_nyquist_per_sweep,
+    FlatDealiasResult2D, FlatDealiasResult3D, FlatVelocityResult2D,
 };
 use serde_json::json;
 use wasm_bindgen::prelude::*;
@@ -20,6 +20,20 @@ fn result_2d(
         folds: array_to_vec_i16(folds),
         confidence: array_to_vec_f64(confidence),
         reference: array_to_vec_f64(reference),
+        rows,
+        cols,
+        metadata_json: metadata_json(metadata),
+    }
+}
+
+fn result_velocity_2d(
+    velocity: ndarray::ArrayD<f64>,
+    rows: usize,
+    cols: usize,
+    metadata: serde_json::Value,
+) -> FlatVelocityResult2D {
+    FlatVelocityResult2D {
+        velocity: array_to_vec_f32(velocity),
         rows,
         cols,
         metadata_json: metadata_json(metadata),
@@ -139,6 +153,52 @@ pub fn dealias_sweep_jh01_packed(
             "unresolved_gates": result.unresolved_gates,
             "resolved_fraction": result.resolved_fraction,
             "wrap_azimuth": wrap_azimuth,
+        }),
+    ))
+}
+
+#[wasm_bindgen(js_name = dealiasSweepJH01Velocity)]
+pub fn dealias_sweep_jh01_velocity(
+    observed: Vec<f64>,
+    rows: usize,
+    cols: usize,
+    nyquist: f64,
+    previous_corrected: Vec<f64>,
+    background_reference: Vec<f64>,
+    shift_az: isize,
+    shift_range: isize,
+    wrap_azimuth: bool,
+    refine_with_multipass: bool,
+) -> Result<FlatVelocityResult2D, JsValue> {
+    let observed = require_2d(observed, rows, cols, "observed")?;
+    let previous_corrected = optional_2d(previous_corrected, rows, cols, "previous_corrected")?;
+    let background_reference = optional_2d(background_reference, rows, cols, "background_reference")?;
+    let result = open_dealias_core::dealias_sweep_jh01(
+        observed.view(),
+        nyquist,
+        previous_corrected.as_ref().map(|value| value.view()),
+        background_reference.as_ref().map(|value| value.view()),
+        shift_az,
+        shift_range,
+        wrap_azimuth,
+        refine_with_multipass,
+    )
+    .map_err(js_error)?;
+    Ok(result_velocity_2d(
+        result.velocity,
+        rows,
+        cols,
+        json!({
+            "paper_family": if refine_with_multipass { "JamesHouze2001+ZhangWang2006" } else { "JamesHouze2001" },
+            "method": result.method,
+            "shift_az": shift_az,
+            "shift_range": shift_range,
+            "valid_gates": result.valid_gates,
+            "assigned_gates": result.assigned_gates,
+            "unresolved_gates": result.unresolved_gates,
+            "resolved_fraction": result.resolved_fraction,
+            "wrap_azimuth": wrap_azimuth,
+            "output": "velocity_only",
         }),
     ))
 }

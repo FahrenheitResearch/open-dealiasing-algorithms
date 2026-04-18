@@ -8,6 +8,7 @@ import {
   type OpenDealiasBackend,
   type PackedDealiasResult,
   type PackedSweep,
+  type PackedVelocityResult,
   type PackedVolume,
   type PackedVolumeDealiasResult,
   type RecursiveOptions,
@@ -64,6 +65,17 @@ function normalizeVolumeResult(raw: Record<string, unknown>): PackedVolumeDealia
     folds: raw.folds instanceof Int16Array ? raw.folds : Int16Array.from(raw.folds as ArrayLike<number>),
     confidence: raw.confidence instanceof Float32Array ? raw.confidence : Float32Array.from(raw.confidence as ArrayLike<number>),
     sweepCount: Number(raw.sweeps),
+    azimuthCount: Number(raw.rows),
+    gateCount: Number(raw.cols),
+    metadata: parseMetadataJson(raw.metadata_json),
+  };
+  maybeFree(raw);
+  return result;
+}
+
+function normalizeVelocityResult(raw: Record<string, unknown>): PackedVelocityResult {
+  const result = {
+    velocity: raw.velocity instanceof Float32Array ? raw.velocity : Float32Array.from(raw.velocity as ArrayLike<number>),
     azimuthCount: Number(raw.rows),
     gateCount: Number(raw.cols),
     metadata: parseMetadataJson(raw.metadata_json),
@@ -162,6 +174,21 @@ export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenD
         true,
       ));
     },
+    dealiasSweepZW06VelocityPacked(observed, nyquist, reference) {
+      return normalizeVelocityResult(call<Record<string, unknown>>(
+        "dealiasSweepZw06Velocity",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        reference?.data ?? [],
+        0.35,
+        true,
+        12,
+        true,
+        true,
+      ));
+    },
     dealiasSweepXu11Packed(observed, nyquist, options) {
       const reference = options.reference
         ? packSweep(options.reference)
@@ -176,6 +203,31 @@ export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenD
           : undefined;
       return normalizeSweepResult(call<Record<string, unknown>>(
         "dealiasSweepXu11",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        options.azimuthDeg,
+        options.elevationDeg ?? 0,
+        reference?.data ?? [],
+        1.0,
+        true,
+      ));
+    },
+    dealiasSweepXu11VelocityPacked(observed, nyquist, options) {
+      const reference = options.reference
+        ? packSweep(options.reference)
+        : options.backgroundUV
+          ? buildPackedReferenceFromUV(
+              options.azimuthDeg,
+              observed.gateCount,
+              options.backgroundUV[0],
+              options.backgroundUV[1],
+              options.elevationDeg ?? 0,
+            )
+          : undefined;
+      return normalizeVelocityResult(call<Record<string, unknown>>(
+        "dealiasSweepXu11Velocity",
         observed.data,
         observed.azimuthCount,
         observed.gateCount,
@@ -202,10 +254,42 @@ export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenD
         true,
       ));
     },
+    dealiasSweepJH01VelocityPacked(observed, nyquist, previousCorrected, options) {
+      return normalizeVelocityResult(call<Record<string, unknown>>(
+        "dealiasSweepJH01Velocity",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        previousCorrected.data,
+        [],
+        options?.shiftAz ?? 0,
+        options?.shiftRange ?? 0,
+        true,
+        true,
+      ));
+    },
     dealiasSweepRegionGraphPacked(observed, nyquist, options) {
       const reference = options?.reference ? packSweep(options.reference) : undefined;
       return normalizeSweepResult(call<Record<string, unknown>>(
         "dealiasSweepRegionGraph",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        reference?.data ?? [],
+        undefined,
+        undefined,
+        0.75,
+        6,
+        8,
+        true,
+      ));
+    },
+    dealiasSweepRegionGraphVelocityPacked(observed, nyquist, options) {
+      const reference = options?.reference ? packSweep(options.reference) : undefined;
+      return normalizeVelocityResult(call<Record<string, unknown>>(
+        "dealiasSweepRegionGraphVelocity",
         observed.data,
         observed.azimuthCount,
         observed.gateCount,
@@ -250,6 +334,25 @@ export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenD
         0.75,
         6,
         8,
+        8,
+        1.0,
+        0.50,
+        0.20,
+        8,
+        true,
+      ));
+    },
+    dealiasSweepVariationalVelocityPacked(observed, nyquist, options) {
+      const reference = options?.reference ? packSweep(options.reference) : undefined;
+      return normalizeVelocityResult(call<Record<string, unknown>>(
+        "dealiasSweepVariationalVelocity",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        reference?.data ?? [],
+        undefined,
+        undefined,
         8,
         1.0,
         0.50,

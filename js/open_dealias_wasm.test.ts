@@ -74,3 +74,30 @@ test("createOpenDealiasBackendFromModule adapts xu11 reference packing", () => {
   assert.equal(result.metadata.method, "xu11");
   assert.equal(result.velocity.length, observed.data.length);
 });
+
+test("createOpenDealiasBackendFromModule adapts velocity-only sweep results", () => {
+  const backend = createOpenDealiasBackendFromModule({
+    dealiasSweepRegionGraphVelocity(
+      observed: Float64Array,
+      rows: number,
+      cols: number,
+    ) {
+      return {
+        velocity: Float32Array.from(observed, (value) => value + 2),
+        rows,
+        cols,
+        metadata_json: JSON.stringify({ method: "region_graph", output: "velocity_only" }),
+      };
+    },
+  });
+
+  const observed: PackedSweep = {
+    data: new Float64Array([1, 2, 3, 4]),
+    azimuthCount: 2,
+    gateCount: 2,
+  };
+  const result = backend.dealiasSweepRegionGraphVelocityPacked!(observed, 10);
+  assert.deepEqual(Array.from(result.velocity), [3, 4, 5, 6]);
+  assert.equal(result.velocity.constructor.name, "Float32Array");
+  assert.equal(result.metadata.output, "velocity_only");
+});

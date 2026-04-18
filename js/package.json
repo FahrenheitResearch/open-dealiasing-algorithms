@@ -22,7 +22,9 @@
     "build": "tsc -p tsconfig.json",
     "build:wasm": "wasm-pack build ../rust/open_dealias_wasm --target web --out-dir ../../js/pkg --release",
     "build:all": "npm run build && npm run build:wasm",
-    "test": "npm run build && node --test dist/*.test.js"
+    "test": "npm run build && node --test dist/*.test.js",
+    "profile:fast": "npm run build && node --expose-gc profile_fastpath.mjs half",
+    "profile:full": "npm run build && node --expose-gc profile_fastpath.mjs full"
   },
   "devDependencies": {
     "@types/node": "^24.9.1",

@@ -1,6 +1,7 @@
 use crate::common::{
-    array_to_vec_f64, array_to_vec_i16, js_error, metadata_json, optional_2d, require_1d,
-    require_2d, FlatDealiasResult1D, FlatDealiasResult2D, WasmVadFit2D, WasmMlModel,
+    array_to_vec_f32, array_to_vec_f64, array_to_vec_i16, js_error, metadata_json, optional_2d,
+    require_1d, require_2d, FlatDealiasResult1D, FlatDealiasResult2D, FlatVelocityResult2D,
+    WasmVadFit2D, WasmMlModel,
 };
 use serde_json::json;
 use wasm_bindgen::prelude::*;
@@ -37,6 +38,20 @@ fn result_2d(
         folds: array_to_vec_i16(folds),
         confidence: array_to_vec_f64(confidence),
         reference: array_to_vec_f64(reference),
+        rows,
+        cols,
+        metadata_json: metadata_json(metadata),
+    }
+}
+
+fn result_velocity_2d(
+    velocity: ndarray::ArrayD<f64>,
+    rows: usize,
+    cols: usize,
+    metadata: serde_json::Value,
+) -> FlatVelocityResult2D {
+    FlatVelocityResult2D {
+        velocity: array_to_vec_f32(velocity),
         rows,
         cols,
         metadata_json: metadata_json(metadata),
@@ -167,6 +182,51 @@ pub fn dealias_sweep_zw06(
     ))
 }
 
+#[wasm_bindgen(js_name = dealiasSweepZw06Velocity)]
+pub fn dealias_sweep_zw06_velocity(
+    observed: Vec<f64>,
+    rows: usize,
+    cols: usize,
+    nyquist: f64,
+    reference: Vec<f64>,
+    weak_threshold_fraction: f64,
+    wrap_azimuth: bool,
+    max_iterations_per_pass: usize,
+    include_diagonals: bool,
+    recenter_without_reference: bool,
+) -> Result<FlatVelocityResult2D, JsValue> {
+    let observed = require_2d(observed, rows, cols, "observed")?;
+    let reference = optional_2d(reference, rows, cols, "reference")?;
+    let result = open_dealias_core::dealias_sweep_zw06(
+        observed.view(),
+        nyquist,
+        reference.as_ref().map(|value| value.view()),
+        weak_threshold_fraction,
+        wrap_azimuth,
+        max_iterations_per_pass,
+        include_diagonals,
+        recenter_without_reference,
+    )
+    .map_err(js_error)?;
+    Ok(result_velocity_2d(
+        result.velocity,
+        rows,
+        cols,
+        json!({
+            "paper_family": "JingWiener1993+ZhangWang2006",
+            "method": "2d_multipass",
+            "seeded_gates": result.seeded_gates,
+            "assigned_gates": result.assigned_gates,
+            "iterations_used": result.iterations_used,
+            "weak_threshold_fraction": weak_threshold_fraction,
+            "wrap_azimuth": wrap_azimuth,
+            "include_diagonals": include_diagonals,
+            "recenter_without_reference": recenter_without_reference,
+            "output": "velocity_only",
+        }),
+    ))
+}
+
 #[wasm_bindgen(js_name = dealiasSweepRegionGraph)]
 pub fn dealias_sweep_region_graph(
     observed: Vec<f64>,
@@ -218,6 +278,59 @@ pub fn dealias_sweep_region_graph(
             "average_fold": result.average_fold,
             "regions_with_reference": result.regions_with_reference,
             "block_grid_shape": [result.block_grid_shape.0, result.block_grid_shape.1],
+        }),
+    ))
+}
+
+#[wasm_bindgen(js_name = dealiasSweepRegionGraphVelocity)]
+pub fn dealias_sweep_region_graph_velocity(
+    observed: Vec<f64>,
+    rows: usize,
+    cols: usize,
+    nyquist: f64,
+    reference: Vec<f64>,
+    block_rows: Option<usize>,
+    block_cols: Option<usize>,
+    reference_weight: f64,
+    max_iterations: usize,
+    max_abs_fold: i16,
+    wrap_azimuth: bool,
+) -> Result<FlatVelocityResult2D, JsValue> {
+    let observed = require_2d(observed, rows, cols, "observed")?;
+    let reference = optional_2d(reference, rows, cols, "reference")?;
+    let block_shape = match (block_rows, block_cols) {
+        (Some(r), Some(c)) => Some((r, c)),
+        (None, None) => None,
+        _ => return Err(JsValue::from_str("block_rows and block_cols must be provided together")),
+    };
+    let result = open_dealias_core::dealias_sweep_region_graph(
+        observed.view(),
+        nyquist,
+        reference.as_ref().map(|value| value.view()),
+        block_shape,
+        reference_weight,
+        max_iterations,
+        max_abs_fold,
+        wrap_azimuth,
+    )
+    .map_err(js_error)?;
+    Ok(result_velocity_2d(
+        result.velocity,
+        rows,
+        cols,
+        json!({
+            "paper_family": "PyARTRegionGraphLite",
+            "method": "region_graph_sweep",
+            "region_count": result.region_count,
+            "assigned_regions": result.assigned_regions,
+            "seed_region": result.seed_region,
+            "block_shape": [result.block_shape.0, result.block_shape.1],
+            "merge_iterations": result.merge_iterations,
+            "wrap_azimuth": result.wrap_azimuth,
+            "average_fold": result.average_fold,
+            "regions_with_reference": result.regions_with_reference,
+            "block_grid_shape": [result.block_grid_shape.0, result.block_grid_shape.1],
+            "output": "velocity_only",
         }),
     ))
 }
@@ -405,6 +518,81 @@ pub fn dealias_sweep_variational(
     ))
 }
 
+#[wasm_bindgen(js_name = dealiasSweepVariationalVelocity)]
+pub fn dealias_sweep_variational_velocity(
+    observed: Vec<f64>,
+    rows: usize,
+    cols: usize,
+    nyquist: f64,
+    reference: Vec<f64>,
+    block_rows: Option<usize>,
+    block_cols: Option<usize>,
+    max_abs_fold: i16,
+    neighbor_weight: f64,
+    reference_weight: f64,
+    smoothness_weight: f64,
+    max_iterations: usize,
+    wrap_azimuth: bool,
+) -> Result<FlatVelocityResult2D, JsValue> {
+    let observed_array = require_2d(observed, rows, cols, "observed")?;
+    let reference_array = optional_2d(reference, rows, cols, "reference")?;
+    let block_shape = match (block_rows, block_cols) {
+        (Some(r), Some(c)) => Some((r, c)),
+        (None, None) => None,
+        _ => return Err(JsValue::from_str("block_rows and block_cols must be provided together")),
+    };
+    let bootstrap = open_dealias_core::dealias_sweep_region_graph(
+        observed_array.view(),
+        nyquist,
+        reference_array.as_ref().map(|value| value.view()),
+        block_shape,
+        reference_weight,
+        max_iterations,
+        max_abs_fold,
+        wrap_azimuth,
+    )
+    .map_err(js_error)?;
+    let initial = ndarray::ArrayD::from_shape_vec(
+        ndarray::IxDyn(&[rows, cols]),
+        array_to_vec_f64(bootstrap.velocity.clone()),
+    )
+    .expect("shape already validated")
+    .into_dimensionality::<ndarray::Ix2>()
+    .expect("shape already validated");
+    let result = open_dealias_core::dealias_sweep_variational_refine(
+        observed_array.view(),
+        initial.view(),
+        reference_array.as_ref().map(|value| value.view()),
+        nyquist,
+        max_abs_fold,
+        neighbor_weight,
+        reference_weight,
+        smoothness_weight,
+        max_iterations,
+        wrap_azimuth,
+    )
+    .map_err(js_error)?;
+    Ok(result_velocity_2d(
+        result.velocity,
+        rows,
+        cols,
+        json!({
+            "paper_family": "VariationalLite",
+            "method": "region_graph_bootstrap_then_coordinate_descent",
+            "iterations_used": result.iterations_used,
+            "changed_gates": result.changed_gates,
+            "max_abs_fold": max_abs_fold,
+            "neighbor_weight": neighbor_weight,
+            "reference_weight": reference_weight,
+            "smoothness_weight": smoothness_weight,
+            "wrap_azimuth": wrap_azimuth,
+            "bootstrap_method": "region_graph_sweep",
+            "bootstrap_region_count": bootstrap.region_count,
+            "output": "velocity_only",
+        }),
+    ))
+}
+
 #[wasm_bindgen(js_name = estimateUniformWindVad)]
 pub fn estimate_uniform_wind_vad(
     observed: Vec<f64>,
@@ -483,6 +671,50 @@ pub fn dealias_sweep_xu11(
             "offset": result.offset,
             "vad_rms": result.vad_rms,
             "vad_iterations": result.vad_iterations,
+        }),
+    ))
+}
+
+#[wasm_bindgen(js_name = dealiasSweepXu11Velocity)]
+pub fn dealias_sweep_xu11_velocity(
+    observed: Vec<f64>,
+    rows: usize,
+    cols: usize,
+    nyquist: f64,
+    azimuth_deg: Vec<f64>,
+    elevation_deg: f64,
+    external_reference: Vec<f64>,
+    search_limit: f64,
+    refine_with_multipass: bool,
+) -> Result<FlatVelocityResult2D, JsValue> {
+    let observed = require_2d(observed, rows, cols, "observed")?;
+    let azimuth_deg = require_1d(azimuth_deg, rows, "azimuth_deg")?;
+    let external_reference = optional_2d(external_reference, rows, cols, "external_reference")?;
+    let result = open_dealias_core::dealias_sweep_xu11(
+        observed.view(),
+        nyquist,
+        azimuth_deg.view(),
+        elevation_deg,
+        external_reference.as_ref().map(|value| value.view()),
+        search_limit,
+        refine_with_multipass,
+    )
+    .map_err(js_error)?;
+    Ok(result_velocity_2d(
+        result.velocity,
+        rows,
+        cols,
+        json!({
+            "paper_family": if refine_with_multipass { "XuEtAl2011+ZhangWang2006" } else { "XuEtAl2011" },
+            "method": result.method,
+            "u": result.u,
+            "v": result.v,
+            "offset": result.offset,
+            "vad_rms": result.vad_rms,
+            "vad_iterations": result.vad_iterations,
+            "search_limit": search_limit,
+            "elevation_deg": elevation_deg,
+            "output": "velocity_only",
         }),
     ))
 }

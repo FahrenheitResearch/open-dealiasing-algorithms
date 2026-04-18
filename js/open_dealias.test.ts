@@ -7,7 +7,9 @@ import {
   dealiasDualPrfPacked,
   dealiasRadialES90,
   dealiasSweepJH01,
+  dealiasSweepJH01VelocityPacked,
   dealiasSweepRegionGraphPacked,
+  dealiasSweepRegionGraphVelocityPacked,
   dealiasSweepZW06,
   dealiasSweepZW06Packed,
   initOpenDealiasWasm,
@@ -75,6 +77,16 @@ test("packSweep and unpackSweep round-trip typed arrays", () => {
   assert.deepEqual(unpackSweep(packed), matrix);
 });
 
+test("packSweep reuses already-packed typed arrays", () => {
+  const packed = {
+    data: new Float64Array([1, 2, 3, 4]),
+    azimuthCount: 2,
+    gateCount: 2,
+  };
+  const repacked = packSweep(packed);
+  assert.equal(repacked.data, packed.data);
+});
+
 test("dealiasSweepZW06Packed returns flat typed arrays", () => {
   const azimuth = Array.from({ length: 12 }, (_, i) => i * 30);
   const ref = buildPackedReferenceFromUV(azimuth, 8, 15, -2);
@@ -88,6 +100,21 @@ test("dealiasSweepZW06Packed returns flat typed arrays", () => {
   assert.equal(result.confidence.constructor.name, "Float32Array");
   assert.equal(result.azimuthCount, 12);
   assert.equal(result.gateCount, 8);
+});
+
+test("velocity-only packed helpers return compact typed arrays", () => {
+  const azimuth = Array.from({ length: 12 }, (_, i) => i * 30);
+  const ref = buildPackedReferenceFromUV(azimuth, 8, 15, -2);
+  const observed = {
+    ...ref,
+    data: Float64Array.from(ref.data, (value) => wrapToNyquist(value, 10)),
+  };
+  const region = dealiasSweepRegionGraphVelocityPacked(observed, 10, { reference: ref });
+  const jh01 = dealiasSweepJH01VelocityPacked(observed, 10, ref);
+  assert.equal(region.velocity.constructor.name, "Float32Array");
+  assert.equal(region.velocity.length, observed.data.length);
+  assert.equal(jh01.velocity.constructor.name, "Float32Array");
+  assert.equal(jh01.velocity.length, observed.data.length);
 });
 
 test("initOpenDealiasWasm accepts a module-style backend factory", async () => {

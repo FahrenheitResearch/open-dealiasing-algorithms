@@ -121,6 +121,10 @@ pub(crate) fn array_to_vec_f64(array: ArrayD<f64>) -> Vec<f64> {
     array.iter().copied().collect()
 }
 
+pub(crate) fn array_to_vec_f32(array: ArrayD<f64>) -> Vec<f32> {
+    array.iter().map(|value| *value as f32).collect()
+}
+
 pub(crate) fn array_to_vec_i16(array: ArrayD<i16>) -> Vec<i16> {
     array.iter().copied().collect()
 }
@@ -141,6 +145,14 @@ pub struct FlatDealiasResult2D {
     pub folds: Vec<i16>,
     pub confidence: Vec<f64>,
     pub reference: Vec<f64>,
+    pub rows: usize,
+    pub cols: usize,
+    pub metadata_json: String,
+}
+
+#[wasm_bindgen(getter_with_clone)]
+pub struct FlatVelocityResult2D {
+    pub velocity: Vec<f32>,
     pub rows: usize,
     pub cols: usize,
     pub metadata_json: String,

@@ -34,6 +34,13 @@ export interface PackedDealiasResult {
   metadata: Record<string, unknown>;
 }
 
+export interface PackedVelocityResult {
+  velocity: Float32Array;
+  azimuthCount: number;
+  gateCount: number;
+  metadata: Record<string, unknown>;
+}
+
 export interface PackedVolumeDealiasResult {
   velocity: Float64Array;
   folds: Int16Array;
@@ -90,11 +97,16 @@ export interface OpenDealiasBackend {
   };
   estimateUniformWindVAD?(observed: PackedSweep, azimuthDeg: ArrayLike<number>, elevationDeg?: number): readonly [number, number];
   dealiasSweepZW06Packed?(observed: PackedSweep, nyquist: number, reference?: PackedSweep): PackedDealiasResult;
+  dealiasSweepZW06VelocityPacked?(observed: PackedSweep, nyquist: number, reference?: PackedSweep): PackedVelocityResult;
   dealiasSweepXu11Packed?(observed: PackedSweep, nyquist: number, options: Xu11Options): PackedDealiasResult;
+  dealiasSweepXu11VelocityPacked?(observed: PackedSweep, nyquist: number, options: Xu11Options): PackedVelocityResult;
   dealiasSweepJH01Packed?(observed: PackedSweep, nyquist: number, previousCorrected: PackedSweep, options?: JH01Options): PackedDealiasResult;
+  dealiasSweepJH01VelocityPacked?(observed: PackedSweep, nyquist: number, previousCorrected: PackedSweep, options?: JH01Options): PackedVelocityResult;
   dealiasSweepRegionGraphPacked?(observed: PackedSweep, nyquist: number, options?: RegionGraphOptions): PackedDealiasResult;
+  dealiasSweepRegionGraphVelocityPacked?(observed: PackedSweep, nyquist: number, options?: RegionGraphOptions): PackedVelocityResult;
   dealiasSweepRecursivePacked?(observed: PackedSweep, nyquist: number, options?: RecursiveOptions): PackedDealiasResult;
   dealiasSweepVariationalPacked?(observed: PackedSweep, nyquist: number, options?: VariationalOptions): PackedDealiasResult;
+  dealiasSweepVariationalVelocityPacked?(observed: PackedSweep, nyquist: number, options?: VariationalOptions): PackedVelocityResult;
   dealiasSweepMLPacked?(observed: PackedSweep, nyquist: number, options?: MlOptions): PackedDealiasResult;
   dealiasDualPrfPacked?(lowObserved: PackedSweep, highObserved: PackedSweep, lowNyquist: number, highNyquist: number, options?: DualPrfOptions): PackedDealiasResult;
   dealiasVolumeJH01Packed?(observed: PackedVolume, nyquist: number | ArrayLike<number>, previousCorrected: PackedVolume, options?: VolumeOptions): PackedVolumeDealiasResult;
@@ -109,11 +121,16 @@ export type OpenDealiasBackendSource =
 
 const WASM_METHOD_ALIASES = {
   dealiasSweepZW06Packed: ["dealiasSweepZW06Packed", "dealias_sweep_zw06_packed", "dealiasSweepZw06Packed"],
+  dealiasSweepZW06VelocityPacked: ["dealiasSweepZW06VelocityPacked", "dealiasSweepZw06Velocity"],
   dealiasSweepXu11Packed: ["dealiasSweepXu11Packed", "dealias_sweep_xu11_packed", "dealiasSweepXu11"],
+  dealiasSweepXu11VelocityPacked: ["dealiasSweepXu11VelocityPacked", "dealiasSweepXu11Velocity"],
   dealiasSweepJH01Packed: ["dealiasSweepJH01Packed", "dealias_sweep_jh01_packed", "dealiasSweepJh01Packed"],
+  dealiasSweepJH01VelocityPacked: ["dealiasSweepJH01VelocityPacked", "dealiasSweepJh01Velocity"],
   dealiasSweepRegionGraphPacked: ["dealiasSweepRegionGraphPacked", "dealias_sweep_region_graph_packed"],
+  dealiasSweepRegionGraphVelocityPacked: ["dealiasSweepRegionGraphVelocityPacked", "dealiasSweepRegionGraphVelocity"],
   dealiasSweepRecursivePacked: ["dealiasSweepRecursivePacked", "dealias_sweep_recursive_packed"],
   dealiasSweepVariationalPacked: ["dealiasSweepVariationalPacked", "dealias_sweep_variational_packed", "dealiasSweepVariationalRefinePacked"],
+  dealiasSweepVariationalVelocityPacked: ["dealiasSweepVariationalVelocityPacked", "dealiasSweepVariationalVelocity"],
   dealiasSweepMLPacked: ["dealiasSweepMLPacked", "dealias_sweep_ml_packed"],
   dealiasDualPrfPacked: ["dealiasDualPrfPacked", "dealias_dual_prf_packed", "dealiasDualPRFPacked"],
   dealiasVolumeJH01Packed: ["dealiasVolumeJH01Packed", "dealias_volume_jh01_packed", "dealiasVolumeJh01Packed"],
@@ -180,11 +197,7 @@ function cloneVolume(field: number[][][]): number[][][] {
 
 export function packSweep(field: number[][] | PackedSweep): PackedSweep {
   if (isPackedSweep(field)) {
-    return {
-      data: new Float64Array(field.data),
-      azimuthCount: field.azimuthCount,
-      gateCount: field.gateCount,
-    };
+    return field;
   }
   if (!isArrayOfArrays(field) || field.length === 0 || field[0].length === 0) {
     throw new Error("sweep must be a non-empty 2D numeric matrix");
@@ -215,12 +228,7 @@ export function unpackSweep(field: PackedSweep): number[][] {
 
 export function packVolume(field: number[][][] | PackedVolume): PackedVolume {
   if (isPackedVolume(field)) {
-    return {
-      data: new Float64Array(field.data),
-      sweepCount: field.sweepCount,
-      azimuthCount: field.azimuthCount,
-      gateCount: field.gateCount,
-    };
+    return field;
   }
   if (!isArrayOfArrayOfArrays(field) || field.length === 0 || field[0].length === 0 || field[0][0].length === 0) {
     throw new Error("volume must be a non-empty 3D numeric array");
@@ -271,6 +279,16 @@ function normalizePackedResult(value: PackedDealiasResult | Record<string, unkno
   };
 }
 
+function normalizePackedVelocityResult(value: PackedVelocityResult | Record<string, unknown>, azimuthCount: number, gateCount: number): PackedVelocityResult {
+  const velocity = value.velocity instanceof Float32Array ? value.velocity : Float32Array.from(value.velocity as ArrayLike<number>);
+  return {
+    velocity,
+    azimuthCount,
+    gateCount,
+    metadata: typeof value.metadata === "object" && value.metadata !== null ? value.metadata as Record<string, unknown> : {},
+  };
+}
+
 function normalizePackedVolumeResult(value: PackedVolumeDealiasResult | Record<string, unknown>, sweepCount: number, azimuthCount: number, gateCount: number): PackedVolumeDealiasResult {
   const velocity = value.velocity instanceof Float64Array ? value.velocity : new Float64Array(value.velocity as ArrayLike<number>);
   const folds = value.folds instanceof Int16Array ? value.folds : Int16Array.from(value.folds as ArrayLike<number>);
@@ -293,6 +311,10 @@ export function unpackPackedResult(result: PackedDealiasResult): DealiasResult {
     confidence: unpackSweep({ data: Float64Array.from(result.confidence), azimuthCount: result.azimuthCount, gateCount: result.gateCount }),
     metadata: { ...result.metadata },
   };
+}
+
+export function unpackPackedVelocityResult(result: PackedVelocityResult): number[][] {
+  return unpackSweep({ data: Float64Array.from(result.velocity), azimuthCount: result.azimuthCount, gateCount: result.gateCount });
 }
 
 export function unpackPackedVolumeResult(result: PackedVolumeDealiasResult): VolumeDealiasResult {
@@ -696,6 +718,15 @@ function jsPacked(method: string, result: DealiasResult): PackedDealiasResult {
   };
 }
 
+function jsPackedVelocity(method: string, result: DealiasResult): PackedVelocityResult {
+  return {
+    velocity: Float32Array.from(packSweep(result.velocity).data),
+    azimuthCount: result.velocity.length,
+    gateCount: result.velocity[0]?.length ?? 0,
+    metadata: { backend: "js", method, output: "velocity_only", ...result.metadata },
+  };
+}
+
 function jsPackedVolume(method: string, result: VolumeDealiasResult): PackedVolumeDealiasResult {
   return {
     ...packedVolumeResultFromMatrix(result),
@@ -713,11 +744,16 @@ export function createJsBackend(): OpenDealiasBackend {
     dealiasRadialES90: (observed, nyquist, reference) => dealiasRadialES90Js(observed, nyquist, reference),
     estimateUniformWindVAD: (observed, azimuthDeg, elevationDeg) => estimateUniformWindVAD(observed, azimuthDeg, elevationDeg),
     dealiasSweepZW06Packed: (observed, nyquist, reference) => jsPacked("zw06", dealiasSweepZW06Js(unpackSweep(observed), nyquist, reference ? unpackSweep(reference) : undefined)),
+    dealiasSweepZW06VelocityPacked: (observed, nyquist, reference) => jsPackedVelocity("zw06", dealiasSweepZW06Js(unpackSweep(observed), nyquist, reference ? unpackSweep(reference) : undefined)),
     dealiasSweepXu11Packed: (observed, nyquist, options) => jsPacked("xu11", dealiasSweepXu11Js(unpackSweep(observed), nyquist, options)),
+    dealiasSweepXu11VelocityPacked: (observed, nyquist, options) => jsPackedVelocity("xu11", dealiasSweepXu11Js(unpackSweep(observed), nyquist, options)),
     dealiasSweepJH01Packed: (observed, nyquist, previousCorrected, options) => jsPacked("jh01", dealiasSweepJH01Js(unpackSweep(observed), nyquist, unpackSweep(previousCorrected), options)),
+    dealiasSweepJH01VelocityPacked: (observed, nyquist, previousCorrected, options) => jsPackedVelocity("jh01", dealiasSweepJH01Js(unpackSweep(observed), nyquist, unpackSweep(previousCorrected), options)),
     dealiasSweepRegionGraphPacked: (observed, nyquist, options) => jsPacked("region_graph", dealiasSweepRegionGraphJs(unpackSweep(observed), nyquist, options)),
+    dealiasSweepRegionGraphVelocityPacked: (observed, nyquist, options) => jsPackedVelocity("region_graph", dealiasSweepRegionGraphJs(unpackSweep(observed), nyquist, options)),
     dealiasSweepRecursivePacked: (observed, nyquist, options) => jsPacked("recursive", dealiasSweepRecursiveJs(unpackSweep(observed), nyquist, options)),
     dealiasSweepVariationalPacked: (observed, nyquist, options) => jsPacked("variational", dealiasSweepVariationalJs(unpackSweep(observed), nyquist, options)),
+    dealiasSweepVariationalVelocityPacked: (observed, nyquist, options) => jsPackedVelocity("variational", dealiasSweepVariationalJs(unpackSweep(observed), nyquist, options)),
     dealiasSweepMLPacked: (observed, nyquist, options) => jsPacked("ml", dealiasSweepMLJs(unpackSweep(observed), nyquist, options)),
     dealiasDualPrfPacked: (lowObserved, highObserved, lowNyquist, highNyquist, options) => jsPacked("dual_prf", dealiasDualPrfJs(unpackSweep(lowObserved), unpackSweep(highObserved), lowNyquist, highNyquist, options)),
     dealiasVolumeJH01Packed: (observed, nyquist, previousCorrected, options) => jsPackedVolume("jh01_volume", dealiasVolumeJH01Js(unpackVolume(observed), nyquist, unpackVolume(previousCorrected), options)),
@@ -751,11 +787,16 @@ function moduleBackendFromExports(module: Record<string, unknown>): OpenDealiasB
     foldCount: lookupAlias(module, WASM_METHOD_ALIASES.foldCount) as OpenDealiasBackend["foldCount"],
     estimateUniformWindVAD: lookupAlias(module, WASM_METHOD_ALIASES.estimateUniformWindVAD) as OpenDealiasBackend["estimateUniformWindVAD"],
     dealiasSweepZW06Packed: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepZW06Packed) as OpenDealiasBackend["dealiasSweepZW06Packed"],
+    dealiasSweepZW06VelocityPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepZW06VelocityPacked) as OpenDealiasBackend["dealiasSweepZW06VelocityPacked"],
     dealiasSweepXu11Packed: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepXu11Packed) as OpenDealiasBackend["dealiasSweepXu11Packed"],
+    dealiasSweepXu11VelocityPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepXu11VelocityPacked) as OpenDealiasBackend["dealiasSweepXu11VelocityPacked"],
     dealiasSweepJH01Packed: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepJH01Packed) as OpenDealiasBackend["dealiasSweepJH01Packed"],
+    dealiasSweepJH01VelocityPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepJH01VelocityPacked) as OpenDealiasBackend["dealiasSweepJH01VelocityPacked"],
     dealiasSweepRegionGraphPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepRegionGraphPacked) as OpenDealiasBackend["dealiasSweepRegionGraphPacked"],
+    dealiasSweepRegionGraphVelocityPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepRegionGraphVelocityPacked) as OpenDealiasBackend["dealiasSweepRegionGraphVelocityPacked"],
     dealiasSweepRecursivePacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepRecursivePacked) as OpenDealiasBackend["dealiasSweepRecursivePacked"],
     dealiasSweepVariationalPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepVariationalPacked) as OpenDealiasBackend["dealiasSweepVariationalPacked"],
+    dealiasSweepVariationalVelocityPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepVariationalVelocityPacked) as OpenDealiasBackend["dealiasSweepVariationalVelocityPacked"],
     dealiasSweepMLPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasSweepMLPacked) as OpenDealiasBackend["dealiasSweepMLPacked"],
     dealiasDualPrfPacked: lookupAlias(module, WASM_METHOD_ALIASES.dealiasDualPrfPacked) as OpenDealiasBackend["dealiasDualPrfPacked"],
     dealiasVolumeJH01Packed: lookupAlias(module, WASM_METHOD_ALIASES.dealiasVolumeJH01Packed) as OpenDealiasBackend["dealiasVolumeJH01Packed"],
@@ -848,6 +889,18 @@ export function dealiasSweepZW06Packed(observed: PackedSweep | number[][], nyqui
   return createJsBackend().dealiasSweepZW06Packed!(packedObserved, nyquist, packedReference);
 }
 
+export function dealiasSweepZW06VelocityPacked(observed: PackedSweep | number[][], nyquist: number, reference?: PackedSweep | number[][]): PackedVelocityResult {
+  const packedObserved = packSweep(observed);
+  const packedReference = packReference(reference);
+  const backend = getOpenDealiasBackend();
+  const method = getBackendMethod(backend, "dealiasSweepZW06VelocityPacked");
+  if (typeof method === "function") {
+    const result = method.call(backend, packedObserved, nyquist, packedReference);
+    return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
+  }
+  return createJsBackend().dealiasSweepZW06VelocityPacked!(packedObserved, nyquist, packedReference);
+}
+
 export function dealiasSweepZW06(observed: number[][], nyquist: number, reference?: number[][]): DealiasResult {
   return unpackPackedResult(dealiasSweepZW06Packed(observed, nyquist, reference));
 }
@@ -867,6 +920,21 @@ export function dealiasSweepXu11Packed(observed: PackedSweep | number[][], nyqui
   return createJsBackend().dealiasSweepXu11Packed!(packedObserved, nyquist, normalizedOptions);
 }
 
+export function dealiasSweepXu11VelocityPacked(observed: PackedSweep | number[][], nyquist: number, options: Xu11Options): PackedVelocityResult {
+  const packedObserved = packSweep(observed);
+  const backend = getOpenDealiasBackend();
+  const method = getBackendMethod(backend, "dealiasSweepXu11VelocityPacked");
+  const normalizedOptions: Xu11Options = {
+    ...options,
+    reference: packReference(options.reference),
+  };
+  if (typeof method === "function") {
+    const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
+    return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
+  }
+  return createJsBackend().dealiasSweepXu11VelocityPacked!(packedObserved, nyquist, normalizedOptions);
+}
+
 export function dealiasSweepXu11(observed: number[][], nyquist: number, options: Xu11Options): DealiasResult {
   return unpackPackedResult(dealiasSweepXu11Packed(observed, nyquist, options));
 }
@@ -883,6 +951,18 @@ export function dealiasSweepJH01Packed(observed: PackedSweep | number[][], nyqui
   return createJsBackend().dealiasSweepJH01Packed!(packedObserved, nyquist, packedPrevious, options);
 }
 
+export function dealiasSweepJH01VelocityPacked(observed: PackedSweep | number[][], nyquist: number, previousCorrected: PackedSweep | number[][], options?: JH01Options): PackedVelocityResult {
+  const packedObserved = packSweep(observed);
+  const packedPrevious = packSweep(previousCorrected);
+  const backend = getOpenDealiasBackend();
+  const method = getBackendMethod(backend, "dealiasSweepJH01VelocityPacked");
+  if (typeof method === "function") {
+    const result = method.call(backend, packedObserved, nyquist, packedPrevious, options);
+    return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
+  }
+  return createJsBackend().dealiasSweepJH01VelocityPacked!(packedObserved, nyquist, packedPrevious, options);
+}
+
 export function dealiasSweepJH01(observed: number[][], nyquist: number, previousCorrected: number[][], options?: JH01Options): DealiasResult {
   return unpackPackedResult(dealiasSweepJH01Packed(observed, nyquist, previousCorrected, options));
 }
@@ -897,6 +977,18 @@ export function dealiasSweepRegionGraphPacked(observed: PackedSweep | number[][]
     return normalizePackedResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
   }
   return createJsBackend().dealiasSweepRegionGraphPacked!(packedObserved, nyquist, normalizedOptions);
+}
+
+export function dealiasSweepRegionGraphVelocityPacked(observed: PackedSweep | number[][], nyquist: number, options?: RegionGraphOptions): PackedVelocityResult {
+  const packedObserved = packSweep(observed);
+  const backend = getOpenDealiasBackend();
+  const method = getBackendMethod(backend, "dealiasSweepRegionGraphVelocityPacked");
+  const normalizedOptions = options ? { ...options, reference: packReference(options.reference) } : undefined;
+  if (typeof method === "function") {
+    const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
+    return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
+  }
+  return createJsBackend().dealiasSweepRegionGraphVelocityPacked!(packedObserved, nyquist, normalizedOptions);
 }
 
 export function dealiasSweepRegionGraph(observed: number[][], nyquist: number, options?: RegionGraphOptions): DealiasResult {
@@ -929,6 +1021,18 @@ export function dealiasSweepVariationalPacked(observed: PackedSweep | number[][]
     return normalizePackedResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
   }
   return createJsBackend().dealiasSweepVariationalPacked!(packedObserved, nyquist, normalizedOptions);
+}
+
+export function dealiasSweepVariationalVelocityPacked(observed: PackedSweep | number[][], nyquist: number, options?: VariationalOptions): PackedVelocityResult {
+  const packedObserved = packSweep(observed);
+  const backend = getOpenDealiasBackend();
+  const method = getBackendMethod(backend, "dealiasSweepVariationalVelocityPacked");
+  const normalizedOptions = options ? { ...options, reference: packReference(options.reference) } : undefined;
+  if (typeof method === "function") {
+    const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
+    return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
+  }
+  return createJsBackend().dealiasSweepVariationalVelocityPacked!(packedObserved, nyquist, normalizedOptions);
 }
 
 export function dealiasSweepVariational(observed: number[][], nyquist: number, options?: VariationalOptions): DealiasResult {
