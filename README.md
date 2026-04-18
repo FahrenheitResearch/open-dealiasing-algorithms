@@ -7,7 +7,7 @@ The point of this repo is simple: dealiasing should not be treated like
 proprietary magic. Public papers, ROC documentation, Py-ART, and newer open
 projects already expose the main algorithm families. This repo turns that public
 trail into a coherent open-source base with code, docs, examples, tests, and a
-TypeScript port.
+TypeScript plus WASM integration path.
 
 ## Why this repo exists
 
@@ -133,13 +133,17 @@ open-dealiasing-algorithms/
 |   |-- synthetic_2d_demo.py
 |   `-- synthetic_temporal_demo.py
 |-- js/
-|   |-- open_dealias.test.mjs
+|   |-- open_dealias.test.ts
 |   |-- open_dealias.ts
+|   |-- open_dealias_wasm.test.ts
+|   |-- open_dealias_wasm.ts
 |   |-- package.json
+|   |-- profile_fastpath.mjs
 |   `-- tsconfig.json
 |-- rust/
 |   |-- open_dealias_core/
-|   `-- open_dealias_py/
+|   |-- open_dealias_py/
+|   `-- open_dealias_wasm/
 `-- tests/
     |-- test_benchmark_support.py
     |-- test_dualprf_volume3d.py
@@ -181,8 +185,12 @@ TypeScript:
 ```bash
 cd js
 npm install
+npm run build:wasm
 npm test
 ```
+
+The JS package exports a typed-array-first API from `open-dealias-js`, plus a
+WASM adapter entry from `open-dealias-js/wasm`.
 
 ## Quick start
 
@@ -207,6 +215,35 @@ from open_dealias import estimate_uniform_wind_vad, dealias_sweep_xu11
 from open_dealias import dealias_sweep_jh01, dealias_volume_jh01
 ```
 
+JS / WASM:
+
+```ts
+import {
+  initOpenDealiasWasm,
+  packSweep,
+  dealiasSweepRegionGraphVelocityPacked,
+} from "open-dealias-js";
+
+await initOpenDealiasWasm(() => import("open-dealias-js/wasm"));
+
+const observed = packSweep(velocityMatrix);
+const result = dealiasSweepRegionGraphVelocityPacked(observed, nyquist);
+```
+
+The web path is designed around flat typed arrays rather than nested
+`number[][]` matrices. The most web-friendly entry points today are the
+velocity-only packed sweep helpers:
+
+- `dealiasSweepRegionGraphVelocityPacked`
+- `dealiasSweepZW06VelocityPacked`
+- `dealiasSweepJH01VelocityPacked`
+- `dealiasSweepXu11VelocityPacked`
+- `dealiasSweepVariationalVelocityPacked`
+
+These return corrected velocity only, which keeps browser-side output smaller
+and avoids paying for folds/confidence arrays when a UI only needs the
+dealiased velocity field.
+
 ## Examples and tests
 
 Quick smoke runs:
@@ -220,9 +257,18 @@ python examples/moore_fullscan_speed_report.py
 python examples/synthetic_1d_demo.py
 python examples/synthetic_2d_demo.py
 python examples/synthetic_temporal_demo.py
+cd js && npm test
 ```
 
 The plotting demos write PNGs into `examples/output/`.
+
+For fast JS/WASM perf iteration:
+
+```bash
+cd js
+npm run profile:fast
+npm run profile:full
+```
 
 ## Rust backend
 
@@ -234,8 +280,20 @@ This repo now includes a Rust migration under `rust/`:
 - `rust/open_dealias_py`
   a PyO3 extension that exposes native-backed helpers and solver entry points
   to Python
+- `rust/open_dealias_wasm`
+  a `wasm-bindgen` crate that exposes packed sweep and volume dealiasing entry
+  points to JS runtimes
 - `open_dealias/_rust_bridge.py`
   runtime detection of the native extension
+
+On the JS side:
+
+- `js/open_dealias.ts`
+  typed-array-first JS API with packed sweep/volume helpers
+- `js/open_dealias_wasm.ts`
+  WASM adapter that turns raw wasm exports into the same JS backend surface
+- `js/profile_fastpath.mjs`
+  quick Node/V8 profiler for the recommended browser-facing sweep algorithms
 
 The exact native coverage is intentionally described at the function level in
 the Python modules and tests. Some solver families are native-backed end to
@@ -317,7 +375,7 @@ This is a strong open baseline, not a finished operational stack. It still lacks
 - a real ingest/output layer for radar formats,
 - stronger unresolved-mask policies and richer QC pipelines beyond the current first-class `result_state` reporting,
 - CI-backed comparison notebooks and figures,
-- WASM / JS bindings on top of the Rust core.
+- broader browser/runtime profiling beyond the current Node/V8 fast-path checks.
 
 Several high-level solvers also still favor "fill the field" behavior over a
 fully conservative unresolved-state model. That is a design choice in this repo
