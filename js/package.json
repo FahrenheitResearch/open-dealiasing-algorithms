@@ -2,11 +2,30 @@
   "name": "open-dealias-js",
   "version": "0.1.0",
   "type": "module",
+  "main": "./dist/open_dealias.js",
+  "types": "./dist/open_dealias.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/open_dealias.js",
+      "types": "./dist/open_dealias.d.ts"
+    },
+    "./wasm": {
+      "import": "./dist/open_dealias_wasm.js",
+      "types": "./dist/open_dealias_wasm.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "pkg"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test open_dealias.test.mjs"
+    "build:wasm": "wasm-pack build ../rust/open_dealias_wasm --target web --out-dir ../../js/pkg --release",
+    "build:all": "npm run build && npm run build:wasm",
+    "test": "npm run build && node --test dist/*.test.js"
   },
   "devDependencies": {
+    "@types/node": "^24.9.1",
     "typescript": "^5.8.3"
   }
 }

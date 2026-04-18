@@ -1,0 +1,17 @@
+[package]
+name = "open-dealias-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WebAssembly bindings for the open dealiasing algorithm suite"
+license = "MIT"
+repository = "https://github.com/FahrenheitResearch/open-dealiasing-algorithms"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ndarray = "0.16"
+open-dealias-core = { path = "../open_dealias_core" }
+serde_json = "1"
+wasm-bindgen = "0.2"

@@ -5,8 +5,11 @@
     "moduleResolution": "Node",
     "outDir": "dist",
     "rootDir": ".",
+    "declaration": true,
     "strict": true,
+    "types": ["node"],
+    "allowSyntheticDefaultImports": true,
     "skipLibCheck": true
   },
-  "include": ["open_dealias.ts"]
+  "include": ["*.ts", "*.d.ts"]
 }

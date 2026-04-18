@@ -2,5 +2,6 @@
 members = [
     "rust/open_dealias_core",
     "rust/open_dealias_py",
+    "rust/open_dealias_wasm",
 ]
 resolver = "2"
