@@ -34,7 +34,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("archive_path", help="Path to the selected archive file.")
     parser.add_argument("--previous-path", default=None, help="Optional previous archive file. Defaults to the previous file in the same folder.")
     parser.add_argument("--sweep", type=int, default=1, help="Sweep index to render.")
-    parser.add_argument("--velocity-palette", default="color_tables/RadarScope_BVEL.pal", help="Path to the velocity palette.")
+    parser.add_argument("--velocity-palette", default="color_tables/awips_bv.pal", help="Path to the velocity palette.")
     parser.add_argument("--zoom-span-km", type=float, default=18.0, help="Half-width of the vrot-centered crop.")
     parser.add_argument(
         "--output",

@@ -50,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--crop-half-size", type=int, default=28, help="Half-size of the square crop around the vrot center.")
     parser.add_argument("--output-prefix", default="region_variational_migration_benchmark", help="Prefix for JSON and PNG outputs.")
     parser.add_argument("--synthetic-only", action="store_true", help="Skip the archive case and run synthetic cases only.")
-    parser.add_argument("--velocity-palette", default="color_tables/RadarScope_BVEL.pal", help="Palette used for velocity panels.")
+    parser.add_argument("--velocity-palette", default="color_tables/awips_bv.pal", help="Palette used for velocity panels.")
     return parser.parse_args()
 
 

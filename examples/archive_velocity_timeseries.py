@@ -35,7 +35,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=12, help="Number of consecutive frames to render around the peak frame.")
     parser.add_argument(
         "--velocity-palette",
-        default="color_tables/RadarScope_BVEL.pal",
+        default="color_tables/awips_bv.pal",
         help="Path to a .pal file for velocity display.",
     )
     parser.add_argument(
