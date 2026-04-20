@@ -285,6 +285,7 @@ impl SweepVelocityWorkspace {
                 "assigned_regions": result.assigned_regions,
                 "unresolved_regions": result.unresolved_regions,
                 "skipped_sparse_blocks": result.skipped_sparse_blocks,
+                "pruned_disconnected_seedable_regions": result.pruned_disconnected_seedable_regions,
                 "safety_fallback_applied": result.safety_fallback_applied,
                 "safety_fallback_reason": result.safety_fallback_reason,
                 "output": "velocity_only_workspace",
@@ -582,6 +583,7 @@ pub fn dealias_sweep_region_graph(
             "seedable_region_count": result.seedable_region_count,
             "assigned_regions": result.assigned_regions,
             "unresolved_regions": result.unresolved_regions,
+            "pruned_disconnected_seedable_regions": result.pruned_disconnected_seedable_regions,
             "seed_region": result.seed_region,
             "block_shape": [result.block_shape.0, result.block_shape.1],
             "merge_iterations": result.merge_iterations,
@@ -653,6 +655,7 @@ pub fn dealias_sweep_region_graph_velocity(
             "seedable_region_count": result.seedable_region_count,
             "assigned_regions": result.assigned_regions,
             "unresolved_regions": result.unresolved_regions,
+            "pruned_disconnected_seedable_regions": result.pruned_disconnected_seedable_regions,
             "seed_region": result.seed_region,
             "block_shape": [result.block_shape.0, result.block_shape.1],
             "merge_iterations": result.merge_iterations,
@@ -1281,6 +1284,6 @@ mod tests {
         assert!(workspace.velocity.iter().all(|value| value.is_nan()));
         assert!(workspace
             .metadata_json()
-            .contains("\"unresolved_regions\":1"));
+            .contains("\"region_count\":0"));
     }
 }

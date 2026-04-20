@@ -15,7 +15,6 @@ from ._core import (
     gaussian_confidence,
     neighbor_stack,
     texture_3x3,
-    unfold_to_reference,
 )
 from .multipass import dealias_sweep_zw06
 from .result_state import attach_result_state_from_fields
@@ -35,6 +34,7 @@ class _Region:
     area: int
     density: float = 1.0
     seedable: bool = True
+    reference_mean: float = float("nan")
     neighbors: set[int] = field(default_factory=set)
     boundary_weight: dict[int, int] = field(default_factory=dict)
 
@@ -58,6 +58,24 @@ def _wrap_delta(a: np.ndarray | float, b: np.ndarray | float, nyquist: float) ->
     arr_b = np.asarray(b, dtype=float)
     delta = ((arr_a - arr_b + nyquist) % (2.0 * nyquist)) - nyquist
     return np.where(np.isfinite(arr_a) & np.isfinite(arr_b), delta, np.nan)
+
+
+def _unfold_sparse_to_reference(
+    observed: np.ndarray,
+    reference_field: np.ndarray,
+    covered: np.ndarray,
+    nyquist: float,
+    *,
+    max_abs_fold: int = 32,
+) -> np.ndarray:
+    corrected = np.full(observed.shape, np.nan, dtype=float)
+    mask = covered & np.isfinite(observed) & np.isfinite(reference_field)
+    if not np.any(mask):
+        return corrected
+    fold = np.rint((reference_field[mask] - observed[mask]) / (2.0 * nyquist))
+    fold = np.clip(fold, -max_abs_fold, max_abs_fold)
+    corrected[mask] = observed[mask] + 2.0 * nyquist * fold
+    return corrected
 
 
 def _solution_cost(candidate: np.ndarray, observed: np.ndarray, reference: np.ndarray | None, nyquist: float) -> float:
@@ -225,11 +243,13 @@ def _build_regions(
             )
             if not seedable:
                 skipped_sparse_blocks += 1
+                continue
             region_id = len(regions)
             block_ids[bi, bj] = region_id
             texture = _safe_nanmedian(texture_map[r0:r1, c0:c1])
             if not np.isfinite(texture):
                 texture = 0.0
+            reference_mean = _region_mean(reference, r0, r1, c0, c1)
             regions.append(
                 _Region(
                     region_id=region_id,
@@ -241,7 +261,8 @@ def _build_regions(
                     texture=texture,
                     area=finite_count,
                     density=float(valid_fraction),
-                    seedable=bool(seedable),
+                    seedable=True,
+                    reference_mean=reference_mean,
                 )
             )
 
@@ -278,7 +299,7 @@ def _build_regions(
 
     for region in regions:
         if reference is not None:
-            region_ref = _region_mean(reference, region.row0, region.row1, region.col0, region.col1)
+            region_ref = region.reference_mean
             if np.isfinite(region_ref):
                 region.texture = max(region.texture, 0.5 * abs(region.mean_obs - region_ref))
 
@@ -298,13 +319,58 @@ def _pick_seed_region(regions: list[_Region], reference: np.ndarray | None) -> i
 
     scores = []
     for region in candidate_regions:
-        region_ref = _region_mean(reference, region.row0, region.row1, region.col0, region.col1)
+        region_ref = region.reference_mean
         if np.isfinite(region_ref):
             score = abs(region.mean_obs - region_ref) + 0.1 * region.texture - 0.01 * region.area
         else:
             score = abs(region.mean_obs) + 0.1 * region.texture - 0.01 * region.area
         scores.append(score)
     return int(candidate_regions[int(np.argmin(scores))].region_id)
+
+
+def _active_seedable_region_ids(
+    regions: list[_Region],
+    *,
+    seed: int,
+    reference: np.ndarray | None,
+) -> set[int]:
+    if seed < 0:
+        return set()
+    components: list[set[int]] = []
+    seen: set[int] = set()
+    for region in regions:
+        if not region.seedable or region.region_id in seen:
+            continue
+        component: set[int] = set()
+        queue: deque[int] = deque([region.region_id])
+        seen.add(region.region_id)
+        while queue:
+            rid = queue.popleft()
+            component.add(rid)
+            for nb in regions[rid].neighbors:
+                if nb in seen or not regions[nb].seedable:
+                    continue
+                seen.add(nb)
+                queue.append(nb)
+        components.append(component)
+
+    active: set[int] = set()
+    seed_component: set[int] | None = None
+    for component in components:
+        if seed in component:
+            seed_component = component
+            active.update(component)
+            break
+
+    if reference is None:
+        return active
+
+    for component in components:
+        if component is seed_component:
+            continue
+        if any(np.isfinite(regions[rid].reference_mean) for rid in component):
+            active.update(component)
+    return active
 
 
 def _best_fold_for_region(
@@ -327,9 +393,7 @@ def _best_fold_for_region(
         neighbor_means.append(float(corrected_mean))
         neighbor_weights.append(float(max(1, region.boundary_weight.get(nb, 1))))
 
-    region_ref = None
-    if reference is not None:
-        region_ref = _region_mean(reference, region.row0, region.row1, region.col0, region.col1)
+    region_ref = region.reference_mean if reference is not None else float("nan")
 
     if neighbor_means:
         target = float(np.average(neighbor_means, weights=neighbor_weights))
@@ -367,16 +431,18 @@ def _propagate_region_folds(
     reference_weight: float,
     max_abs_fold: int,
     max_iterations: int,
-) -> tuple[dict[int, int], dict[int, float], dict[int, float]]:
+) -> tuple[dict[int, int], dict[int, float], dict[int, float], int]:
     fold_map: dict[int, int] = {}
     mean_map: dict[int, float] = {}
     score_map: dict[int, float] = {}
     if not regions:
-        return fold_map, mean_map, score_map
+        return fold_map, mean_map, score_map, 0
 
     seed = _pick_seed_region(regions, reference)
     if seed < 0:
-        return fold_map, mean_map, score_map
+        return fold_map, mean_map, score_map, 0
+    active_region_ids = _active_seedable_region_ids(regions, seed=seed, reference=reference)
+    pruned_seedable_regions = int(sum(region.seedable and region.region_id not in active_region_ids for region in regions))
     seed_region = regions[seed]
     seed_fold, seed_mean, seed_score = _best_fold_for_region(
         seed_region,
@@ -396,6 +462,8 @@ def _propagate_region_folds(
         rid = queue.popleft()
         for nb in regions[rid].neighbors:
             if nb in fold_map:
+                continue
+            if nb not in active_region_ids:
                 continue
             if not regions[nb].seedable:
                 continue
@@ -418,6 +486,8 @@ def _propagate_region_folds(
     for _ in range(max_iterations):
         changes = 0
         for region in regions:
+            if region.region_id not in active_region_ids:
+                continue
             if region.region_id not in fold_map:
                 continue
             current_fold = fold_map[region.region_id]
@@ -442,7 +512,7 @@ def _propagate_region_folds(
                 score_map[region.region_id] = current_score
         if changes == 0:
             break
-    return fold_map, mean_map, score_map
+    return fold_map, mean_map, score_map, pruned_seedable_regions
 
 
 def _expand_region_solution(
@@ -470,17 +540,23 @@ def _expand_region_solution(
         conf = float(np.clip(np.exp(-0.5 * (score_map[region.region_id] / max(scale, 1e-6)) ** 2), 0.05, 0.99))
         confidence[region.row0:region.row1, region.col0:region.col1] = conf
 
-    coarse_neighbors = neighbor_stack(coarse, include_diagonals=True, wrap_azimuth=wrap_azimuth)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        with np.errstate(all="ignore"):
-            smooth = np.nanmedian(coarse_neighbors, axis=0)
-    reference_field = combine_references(coarse, smooth, reference)
+    finite_observed = np.isfinite(observed)
+    finite_covered = finite_observed & covered
+    covered_fraction = float(np.count_nonzero(finite_covered) / max(1, np.count_nonzero(finite_observed)))
+    use_smooth = covered_fraction >= 0.85
+    if use_smooth:
+        coarse_neighbors = neighbor_stack(coarse, include_diagonals=True, wrap_azimuth=wrap_azimuth)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            with np.errstate(all="ignore"):
+                smooth = np.nanmedian(coarse_neighbors, axis=0)
+        reference_field = combine_references(coarse, smooth, reference)
+    else:
+        reference_field = combine_references(coarse, reference)
     if reference_field is None:
         reference_field = coarse
 
-    corrected = unfold_to_reference(observed, reference_field, nyquist)
-    corrected = np.where(np.isfinite(observed) & covered, corrected, np.nan)
+    corrected = _unfold_sparse_to_reference(observed, reference_field, covered, nyquist)
     confidence = np.where(covered, confidence, 0.0)
     if np.any(np.isfinite(reference_field)):
         mismatch = np.abs(corrected - reference_field)
@@ -535,11 +611,13 @@ def _python_dealias_sweep_region_graph(
                     "method": "region_graph_sweep",
                     "region_count": 0,
                     "seedable_region_count": 0,
+                    "assigned_regions": 0,
                     "unresolved_region_count": 0,
                     "merge_iterations": 0,
                     "min_region_area": int(min_region_area),
                     "min_valid_fraction": float(min_valid_fraction),
                     "skipped_sparse_blocks": 0,
+                    "pruned_disconnected_seedable_regions": 0,
                 },
             ),
             obs,
@@ -568,6 +646,7 @@ def _python_dealias_sweep_region_graph(
                     "method": "region_graph_sweep",
                     "region_count": 0,
                     "seedable_region_count": 0,
+                    "assigned_regions": 0,
                     "unresolved_region_count": 0,
                     "merge_iterations": 0,
                     "block_shape": [int(v) for v in _choose_block_shape(obs.shape, block_shape)],
@@ -576,6 +655,7 @@ def _python_dealias_sweep_region_graph(
                     "min_region_area": int(min_region_area),
                     "min_valid_fraction": float(min_valid_fraction),
                     "skipped_sparse_blocks": int(skipped_sparse_blocks),
+                    "pruned_disconnected_seedable_regions": 0,
                 },
             ),
             obs,
@@ -583,7 +663,7 @@ def _python_dealias_sweep_region_graph(
             parent="PyARTRegionGraphLite",
             fill_policy="region_graph_consensus_conservative",
         )
-    fold_map, mean_map, score_map = _propagate_region_folds(
+    fold_map, mean_map, score_map, pruned_seedable_regions = _propagate_region_folds(
         regions,
         nyquist=nyquist,
         reference=ref,
@@ -615,11 +695,12 @@ def _python_dealias_sweep_region_graph(
         "merge_iterations": int(max_iterations),
         "wrap_azimuth": bool(wrap_azimuth),
         "average_fold": float(np.nanmean(folds[np.isfinite(corrected)])) if np.any(np.isfinite(corrected)) else 0.0,
-        "regions_with_reference": int(sum(np.isfinite(_region_mean(ref, r.row0, r.row1, r.col0, r.col1)) for r in regions)) if ref is not None else 0,
+        "regions_with_reference": int(sum(np.isfinite(r.reference_mean) for r in regions)) if ref is not None else 0,
         "block_grid_shape": [int(v) for v in block_ids.shape],
         "min_region_area": int(min_region_area),
         "min_valid_fraction": float(min_valid_fraction),
         "skipped_sparse_blocks": int(skipped_sparse_blocks),
+        "pruned_disconnected_seedable_regions": int(pruned_seedable_regions),
     }
     base = attach_result_state_from_fields(
         DealiasResult(

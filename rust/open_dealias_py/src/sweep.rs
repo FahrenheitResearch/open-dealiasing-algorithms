@@ -377,6 +377,10 @@ fn dealias_sweep_region_graph<'py>(
     metadata.set_item("min_region_area", result.min_region_area)?;
     metadata.set_item("min_valid_fraction", result.min_valid_fraction)?;
     metadata.set_item("skipped_sparse_blocks", result.skipped_sparse_blocks)?;
+    metadata.set_item(
+        "pruned_disconnected_seedable_regions",
+        result.pruned_disconnected_seedable_regions,
+    )?;
     metadata.set_item("safety_fallback_applied", result.safety_fallback_applied)?;
     metadata.set_item(
         "safety_fallback_reason",

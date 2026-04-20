@@ -1,7 +1,7 @@
 use ndarray::{
     Array2, Array3, ArrayD, ArrayView1, ArrayView2, ArrayView3, ArrayViewD, Axis, IxDyn, Zip,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 mod types;
 pub use types::*;
@@ -1392,6 +1392,7 @@ struct RegionGraphRegion {
     area: usize,
     density: f64,
     seedable: bool,
+    reference_mean: Option<f64>,
     neighbors: Vec<usize>,
     boundary_weight: HashMap<usize, usize>,
 }
@@ -1482,6 +1483,7 @@ fn build_region_graph(
                 && mean_obs.is_finite();
             if !seedable {
                 skipped_sparse_blocks += 1;
+                continue;
             }
 
             let region_id = regions.len();
@@ -1491,6 +1493,7 @@ fn build_region_graph(
             if !texture.is_finite() {
                 texture = 0.0;
             }
+            let reference_mean = reference.and_then(|reference| region_median(reference, r0, r1, c0, c1));
             regions.push(RegionGraphRegion {
                 region_id,
                 row0: r0,
@@ -1501,7 +1504,8 @@ fn build_region_graph(
                 texture,
                 area: finite_count,
                 density: valid_fraction,
-                seedable,
+                seedable: true,
+                reference_mean,
                 neighbors: Vec::new(),
                 boundary_weight: HashMap::new(),
             });
@@ -1551,15 +1555,9 @@ fn build_region_graph(
         }
     }
 
-    if let Some(reference) = reference {
+    if reference.is_some() {
         for region in &mut regions {
-            if let Some(region_ref) = region_median(
-                reference,
-                region.row0,
-                region.row1,
-                region.col0,
-                region.col1,
-            ) {
+            if let Some(region_ref) = region.reference_mean {
                 region.texture = region
                     .texture
                     .max(0.5 * (region.mean_obs - region_ref).abs());
@@ -1584,14 +1582,8 @@ fn pick_seed_region(
         if !region.seedable {
             continue;
         }
-        let score = if let Some(reference) = reference {
-            if let Some(region_ref) = region_median(
-                reference,
-                region.row0,
-                region.row1,
-                region.col0,
-                region.col1,
-            ) {
+        let score = if reference.is_some() {
+            if let Some(region_ref) = region.reference_mean {
                 (region.mean_obs - region_ref).abs() + 0.1 * region.texture
                     - 0.01 * region.area as f64
             } else {
@@ -1606,6 +1598,60 @@ fn pick_seed_region(
         }
     }
     best_index
+}
+
+fn active_seedable_region_ids(
+    regions: &[RegionGraphRegion],
+    seed: usize,
+    reference: Option<ArrayView2<'_, f64>>,
+) -> HashSet<usize> {
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut components: Vec<HashSet<usize>> = Vec::new();
+    for region in regions {
+        if !region.seedable || seen.contains(&region.region_id) {
+            continue;
+        }
+        let mut component: HashSet<usize> = HashSet::new();
+        let mut queue: VecDeque<usize> = VecDeque::from([region.region_id]);
+        seen.insert(region.region_id);
+        while let Some(region_id) = queue.pop_front() {
+            component.insert(region_id);
+            for neighbor_id in &regions[region_id].neighbors {
+                if seen.contains(neighbor_id) || !regions[*neighbor_id].seedable {
+                    continue;
+                }
+                seen.insert(*neighbor_id);
+                queue.push_back(*neighbor_id);
+            }
+        }
+        components.push(component);
+    }
+
+    let mut active: HashSet<usize> = HashSet::new();
+    let mut seed_component_index: Option<usize> = None;
+    for (index, component) in components.iter().enumerate() {
+        if component.contains(&seed) {
+            active.extend(component.iter().copied());
+            seed_component_index = Some(index);
+            break;
+        }
+    }
+
+    if reference.is_some() {
+        for (index, component) in components.iter().enumerate() {
+            if Some(index) == seed_component_index {
+                continue;
+            }
+            let has_reference = component
+                .iter()
+                .any(|region_id| regions[*region_id].reference_mean.is_some());
+            if has_reference {
+                active.extend(component.iter().copied());
+            }
+        }
+    }
+
+    active
 }
 
 fn best_fold_for_region(
@@ -1628,15 +1674,11 @@ fn best_fold_for_region(
         }
     }
 
-    let region_ref = reference.and_then(|reference| {
-        region_median(
-            reference,
-            region.row0,
-            region.row1,
-            region.col0,
-            region.col1,
-        )
-    });
+    let region_ref = if reference.is_some() {
+        region.reference_mean
+    } else {
+        None
+    };
     let mut center = if !neighbor_means.is_empty() {
         let weight_sum: f64 = neighbor_weights.iter().sum::<f64>().max(1e-6);
         let target = neighbor_means
@@ -1704,17 +1746,23 @@ fn propagate_region_folds(
     HashMap<usize, i16>,
     HashMap<usize, f64>,
     HashMap<usize, f64>,
+    usize,
 ) {
     let mut fold_map: HashMap<usize, i16> = HashMap::new();
     let mut mean_map: HashMap<usize, f64> = HashMap::new();
     let mut score_map: HashMap<usize, f64> = HashMap::new();
     if regions.is_empty() {
-        return (fold_map, mean_map, score_map);
+        return (fold_map, mean_map, score_map, 0);
     }
 
     let Some(seed) = pick_seed_region(regions, reference) else {
-        return (fold_map, mean_map, score_map);
+        return (fold_map, mean_map, score_map, 0);
     };
+    let active_region_ids = active_seedable_region_ids(regions, seed, reference);
+    let pruned_seedable_regions = regions
+        .iter()
+        .filter(|region| region.seedable && !active_region_ids.contains(&region.region_id))
+        .count();
     let (seed_fold, seed_mean, seed_score) = best_fold_for_region(
         &regions[seed],
         &fold_map,
@@ -1732,6 +1780,9 @@ fn propagate_region_folds(
     while let Some(region_id) = queue.pop_front() {
         for neighbor_id in &regions[region_id].neighbors {
             if fold_map.contains_key(neighbor_id) {
+                continue;
+            }
+            if !active_region_ids.contains(neighbor_id) {
                 continue;
             }
             if !regions[*neighbor_id].seedable {
@@ -1764,6 +1815,9 @@ fn propagate_region_folds(
         if fold_map.contains_key(&region.region_id) {
             continue;
         }
+        if !active_region_ids.contains(&region.region_id) {
+            continue;
+        }
         if !region.seedable {
             continue;
         }
@@ -1788,6 +1842,9 @@ fn propagate_region_folds(
     while let Some(region_id) = queue.pop_front() {
         for neighbor_id in &regions[region_id].neighbors {
             if fold_map.contains_key(neighbor_id) {
+                continue;
+            }
+            if !active_region_ids.contains(neighbor_id) {
                 continue;
             }
             if !regions[*neighbor_id].seedable {
@@ -1819,6 +1876,9 @@ fn propagate_region_folds(
     for _ in 0..max_iterations {
         let mut changes = 0usize;
         for region in regions {
+            if !active_region_ids.contains(&region.region_id) {
+                continue;
+            }
             if !fold_map.contains_key(&region.region_id) {
                 continue;
             }
@@ -1849,7 +1909,7 @@ fn propagate_region_folds(
         }
     }
 
-    (fold_map, mean_map, score_map)
+    (fold_map, mean_map, score_map, pruned_seedable_regions)
 }
 
 fn expand_region_solution(
@@ -1892,53 +1952,91 @@ fn expand_region_solution(
         }
     }
 
-    let coarse_neighbors = neighbor_stack(coarse.view(), true, wrap_azimuth)?;
-    let mut smooth = Array2::from_elem((rows, cols), f64::NAN);
-    for row in 0..rows {
-        for col in 0..cols {
-            let mut values = Vec::with_capacity(coarse_neighbors.shape()[0]);
-            for layer in 0..coarse_neighbors.shape()[0] {
-                let value = coarse_neighbors[(layer, row, col)];
-                if value.is_finite() {
-                    values.push(value);
-                }
-            }
-            if let Some(median) = quantile_linear(values, 0.5) {
-                smooth[(row, col)] = median;
-            }
-        }
-    }
-
     let mut reference_field = Array2::from_elem((rows, cols), f64::NAN);
-    for row in 0..rows {
-        for col in 0..cols {
-            let mut values = Vec::with_capacity(3);
-            let coarse_value = coarse[(row, col)];
-            if coarse_value.is_finite() {
-                values.push(coarse_value);
-            }
-            let smooth_value = smooth[(row, col)];
-            if smooth_value.is_finite() {
-                values.push(smooth_value);
-            }
-            if let Some(reference) = reference {
-                let reference_value = reference[(row, col)];
-                if reference_value.is_finite() {
-                    values.push(reference_value);
+    let finite_observed = observed.iter().filter(|value| value.is_finite()).count().max(1);
+    let finite_covered = observed
+        .iter()
+        .zip(covered.iter())
+        .filter(|(value, is_covered)| value.is_finite() && **is_covered)
+        .count();
+    let covered_fraction = finite_covered as f64 / finite_observed as f64;
+    if covered_fraction >= 0.85 {
+        let coarse_neighbors = neighbor_stack(coarse.view(), true, wrap_azimuth)?;
+        let mut smooth = Array2::from_elem((rows, cols), f64::NAN);
+        for row in 0..rows {
+            for col in 0..cols {
+                let mut values = Vec::with_capacity(coarse_neighbors.shape()[0]);
+                for layer in 0..coarse_neighbors.shape()[0] {
+                    let value = coarse_neighbors[(layer, row, col)];
+                    if value.is_finite() {
+                        values.push(value);
+                    }
+                }
+                if let Some(median) = quantile_linear(values, 0.5) {
+                    smooth[(row, col)] = median;
                 }
             }
-            if let Some(median) = quantile_linear(values, 0.5) {
-                reference_field[(row, col)] = median;
+        }
+        for row in 0..rows {
+            for col in 0..cols {
+                let mut values = Vec::with_capacity(3);
+                let coarse_value = coarse[(row, col)];
+                if coarse_value.is_finite() {
+                    values.push(coarse_value);
+                }
+                let smooth_value = smooth[(row, col)];
+                if smooth_value.is_finite() {
+                    values.push(smooth_value);
+                }
+                if let Some(reference) = reference {
+                    let reference_value = reference[(row, col)];
+                    if reference_value.is_finite() {
+                        values.push(reference_value);
+                    }
+                }
+                if let Some(median) = quantile_linear(values, 0.5) {
+                    reference_field[(row, col)] = median;
+                }
+            }
+        }
+    } else {
+        for row in 0..rows {
+            for col in 0..cols {
+                let mut values = Vec::with_capacity(2);
+                let coarse_value = coarse[(row, col)];
+                if coarse_value.is_finite() {
+                    values.push(coarse_value);
+                }
+                if let Some(reference) = reference {
+                    let reference_value = reference[(row, col)];
+                    if reference_value.is_finite() {
+                        values.push(reference_value);
+                    }
+                }
+                if let Some(median) = quantile_linear(values, 0.5) {
+                    reference_field[(row, col)] = median;
+                }
             }
         }
     }
-    let corrected = unfold_to_reference(
-        observed.into_dyn(),
-        reference_field.view().into_dyn(),
-        nyquist,
-        32,
-    )?;
-    let mut corrected = corrected.into_dimensionality::<ndarray::Ix2>().expect("2d");
+    let mut corrected = Array2::from_elem((rows, cols), f64::NAN);
+    for row in 0..rows {
+        for col in 0..cols {
+            if !covered[(row, col)] {
+                continue;
+            }
+            let observed_value = observed[(row, col)];
+            let reference_value = reference_field[(row, col)];
+            if !observed_value.is_finite() || !reference_value.is_finite() {
+                confidence[(row, col)] = 0.0;
+                continue;
+            }
+            let fold = ((reference_value - observed_value) / (2.0 * nyquist))
+                .round_ties_even()
+                .clamp(-32.0, 32.0);
+            corrected[(row, col)] = observed_value + 2.0 * nyquist * fold;
+        }
+    }
     for row in 0..rows {
         for col in 0..cols {
             if !observed[(row, col)].is_finite() || !covered[(row, col)] {
@@ -2021,6 +2119,7 @@ fn dealias_sweep_region_graph_raw(
             min_region_area,
             min_valid_fraction,
             skipped_sparse_blocks: 0,
+            pruned_disconnected_seedable_regions: 0,
             safety_fallback_applied: false,
             safety_fallback_reason: None,
             candidate_cost: f64::INFINITY,
@@ -2067,6 +2166,7 @@ fn dealias_sweep_region_graph_raw(
             min_region_area,
             min_valid_fraction,
             skipped_sparse_blocks,
+            pruned_disconnected_seedable_regions: 0,
             safety_fallback_applied: false,
             safety_fallback_reason: None,
             candidate_cost: f64::INFINITY,
@@ -2075,7 +2175,7 @@ fn dealias_sweep_region_graph_raw(
             largest_disagreement_component: 0,
         });
     }
-    let (fold_map, mean_map, score_map) = propagate_region_folds(
+    let (fold_map, mean_map, score_map, pruned_disconnected_seedable_regions) = propagate_region_folds(
         &regions,
         nyquist,
         reference,
@@ -2107,19 +2207,10 @@ fn dealias_sweep_region_graph_raw(
     } else {
         0.0
     };
-    let regions_with_reference = if let Some(reference) = reference {
+    let regions_with_reference = if reference.is_some() {
         regions
             .iter()
-            .filter(|region| {
-                region_median(
-                    reference,
-                    region.row0,
-                    region.row1,
-                    region.col0,
-                    region.col1,
-                )
-                .is_some()
-            })
+            .filter(|region| region.reference_mean.is_some())
             .count()
     } else {
         0
@@ -2152,6 +2243,7 @@ fn dealias_sweep_region_graph_raw(
         min_region_area,
         min_valid_fraction,
         skipped_sparse_blocks,
+        pruned_disconnected_seedable_regions,
         safety_fallback_applied: false,
         safety_fallback_reason: None,
         candidate_cost: f64::NAN,
@@ -2556,6 +2648,7 @@ fn build_leaf_regions(
             area: leaf.area,
             density: 1.0,
             seedable: true,
+            reference_mean: None,
             neighbors: Vec::new(),
             boundary_weight: HashMap::new(),
         });
@@ -3400,7 +3493,7 @@ pub fn dealias_sweep_recursive(
     let mut leaves = Vec::new();
     collect_leaves(&mut root, &mut leaves);
     let mut regions = build_leaf_regions(&leaves, rows, wrap_azimuth);
-    let (mut fold_map, mut mean_map, mut score_map) = propagate_region_folds(
+    let (mut fold_map, mut mean_map, mut score_map, _) = propagate_region_folds(
         &regions,
         nyquist,
         bootstrap_reference.as_ref().map(|field| field.view()),
@@ -5473,10 +5566,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.region_count, 1);
+        assert_eq!(result.region_count, 0);
         assert_eq!(result.seedable_region_count, 0);
         assert_eq!(result.assigned_regions, 0);
-        assert_eq!(result.unresolved_regions, 1);
+        assert_eq!(result.unresolved_regions, 0);
         assert!(result.velocity.iter().all(|value| value.is_nan()));
         assert_eq!(result.skipped_sparse_blocks, 1);
         assert_eq!(result.min_region_area, 4);
@@ -5560,6 +5653,7 @@ mod tests {
         assert_eq!(result.region_count, 2);
         assert_eq!(result.assigned_regions, 1);
         assert_eq!(result.unresolved_regions, 1);
+        assert_eq!(result.pruned_disconnected_seedable_regions, 1);
         let finite_velocity = result
             .velocity
             .iter()

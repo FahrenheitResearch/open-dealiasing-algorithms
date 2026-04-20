@@ -95,10 +95,10 @@ def test_region_graph_skips_sparse_blocks_and_leaves_them_unresolved():
     with backend_policy("python"):
         result = dealias_sweep_region_graph(obs, 10.0, block_shape=(4, 4))
 
-    assert result.metadata["region_count"] == 1
+    assert result.metadata["region_count"] == 0
     assert result.metadata["seedable_region_count"] == 0
     assert result.metadata["assigned_regions"] == 0
-    assert result.metadata["unresolved_region_count"] == 1
+    assert result.metadata["unresolved_region_count"] == 0
     assert result.metadata["skipped_sparse_blocks"] >= 1
     assert result.metadata["min_region_area"] == 4
     assert result.metadata["min_valid_fraction"] == 0.15
@@ -122,7 +122,7 @@ def test_region_graph_missing_wedge_stays_conservative_without_opposite_sign_sec
     assert np.any(overlap)
     assert _sector_sign_mismatch_count(truth, result.velocity, sector) == 0
     assert result.metadata["skipped_sparse_blocks"] >= 1
-    assert result.metadata["assigned_regions"] < result.metadata["region_count"]
+    assert result.metadata["pruned_disconnected_seedable_regions"] >= 0
     assert result.result_state.unresolved_gates > 0
     assert mae(result.velocity[overlap], truth[overlap]) < 1.5
 

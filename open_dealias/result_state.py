@@ -125,8 +125,18 @@ class ResultState:
 
 def attach_result_state(result: "DealiasResult", state: ResultState) -> "DealiasResult":
     """Return a copy of a DealiasResult with state attached."""
-
-    return replace(result, result_state=state)
+    metadata = result.metadata
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+        metadata.update(
+            {
+                "valid_gates": state.valid_gates,
+                "resolved_gates": state.resolved_gates,
+                "unresolved_gates": state.unresolved_gates,
+                "resolved_fraction": state.resolved_fraction,
+            }
+        )
+    return replace(result, result_state=state, metadata=metadata)
 
 
 def build_result_state(

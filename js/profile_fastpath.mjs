@@ -20,7 +20,9 @@ import {
 const mode = process.argv[2] ?? "half";
 const shape = mode === "full"
   ? { rows: 720, cols: 1832 }
-  : { rows: 360, cols: 916 };
+  : mode === "fragmented"
+    ? { rows: 720, cols: 1192 }
+    : { rows: 360, cols: 916 };
 
 async function loadProfileModule() {
   const candidates = [
@@ -89,7 +91,18 @@ function measureWorkspaceCall(name, workspace, observedF32, runner) {
     totalMs: round(t3 - t0),
     outputViewMB: round(outputView.byteLength / (1024 * 1024)),
     sample: round(Number.isFinite(sample) ? sample : 0),
+    metadata: workspace.workspaceMetadata?.() ?? {},
   };
+}
+
+function addRegionGraphDerivedMetadata(result) {
+  const metadata = { ...(result.metadata ?? {}) };
+  if (metadata.method === "region_graph_sweep") {
+    const seedable = Number(metadata.seedable_region_count ?? 0);
+    const pruned = Number(metadata.pruned_disconnected_seedable_regions ?? 0);
+    metadata.active_seedable_region_count = Math.max(0, seedable - pruned);
+  }
+  return { ...result, metadata };
 }
 
 const { module: rawModule, wasmUrl } = await loadProfileModule();
@@ -101,22 +114,64 @@ setOpenDealiasBackend(createOpenDealiasBackendFromModule(rawModule));
 
 const nyquist = 26.12;
 const azimuthDeg = Array.from({ length: shape.rows }, (_, index) => (360 * index) / shape.rows);
-const reference = buildPackedReferenceFromUV(azimuthDeg, shape.cols, 18, -6, 0.5);
-const observed = {
-  ...reference,
-  data: Float64Array.from(reference.data, (value, idx) => {
+const referenceField = buildPackedReferenceFromUV(azimuthDeg, shape.cols, 18, -6, 0.5);
+let reference = referenceField;
+let regionGraphOptions = { reference };
+let observed = {
+  ...referenceField,
+  data: Float64Array.from(referenceField.data, (value, idx) => {
     const shear = ((idx % shape.cols) / shape.cols - 0.5) * 18;
     return wrapToNyquist(value + shear, nyquist);
   }),
 };
-const previous = {
-  ...reference,
-  data: Float64Array.from(reference.data, (value) => value + 1.25),
+let previous = {
+  ...referenceField,
+  data: Float64Array.from(referenceField.data, (value) => value + 1.25),
 };
+
+if (mode === "fragmented") {
+  reference = undefined;
+  regionGraphOptions = { minRegionArea: 4, minValidFraction: 0.15 };
+  const data = Float64Array.from({ length: shape.rows * shape.cols }, () => Number.NaN);
+  const source = referenceField.data;
+  const writeRect = (r0, r1, c0, c1, offset = 0) => {
+    for (let row = r0; row < r1; row += 1) {
+      for (let col = c0; col < c1; col += 1) {
+        const idx = row * shape.cols + col;
+        data[idx] = wrapToNyquist(source[idx] + offset, nyquist);
+      }
+    }
+  };
+  // Large primary component.
+  writeRect(60, 420, 80, 360, 10);
+  writeRect(140, 520, 360, 430, 6);
+  writeRect(260, 340, 430, 640, 14);
+  // Disconnected seedable islands that should now be pruned without a reference.
+  writeRect(80, 180, 760, 860, -12);
+  writeRect(260, 360, 880, 980, -8);
+  writeRect(500, 620, 980, 1100, 16);
+  // Sparse fragments that should be skipped entirely.
+  for (let block = 0; block < 60; block += 1) {
+    const row = (block * 11) % (shape.rows - 8);
+    const col = 680 + ((block * 29) % (shape.cols - 688));
+    const idxA = row * shape.cols + col;
+    const idxB = (row + 1) * shape.cols + col;
+    data[idxA] = wrapToNyquist(source[idxA] + 4, nyquist);
+    data[idxB] = wrapToNyquist(source[idxB] - 4, nyquist);
+  }
+  observed = {
+    ...referenceField,
+    data,
+  };
+  previous = {
+    ...referenceField,
+    data: Float64Array.from(data, (value) => (Number.isFinite(value) ? value : Number.NaN)),
+  };
+}
 const observedF32 = Float32Array.from(observed.data, (value) => Math.fround(value));
 
 const adapterResults = [
-  await measureAdapter("region_graph_velocity", () => dealiasSweepRegionGraphVelocityPacked(observed, nyquist, { reference })),
+  addRegionGraphDerivedMetadata(await measureAdapter("region_graph_velocity", () => dealiasSweepRegionGraphVelocityPacked(observed, nyquist, regionGraphOptions))),
   await measureAdapter("zw06_velocity", () => dealiasSweepZW06VelocityPacked(observed, nyquist, reference)),
   await measureAdapter("variational_velocity", () => dealiasSweepVariationalVelocityPacked(observed, nyquist, { reference })),
   await measureAdapter("jh01_velocity", () => dealiasSweepJH01VelocityPacked(observed, nyquist, previous)),
@@ -144,7 +199,7 @@ if (workspace) {
       "region_graph_velocity_workspace",
       workspace,
       observedF32,
-      () => workspace.runRegionGraphVelocity(nyquist, { reference }),
+      () => workspace.runRegionGraphVelocity(nyquist, regionGraphOptions),
     ));
   }
   if (workspace.supportsVelocityAlgorithm("variational")) {

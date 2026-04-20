@@ -447,7 +447,7 @@ def _python_dealias_sweep_recursive(
     leaves: list[_Node] = []
     _collect_leaves(root, leaves)
     regions = _build_leaf_regions(leaves, obs.shape[0], wrap_azimuth=wrap_azimuth)
-    fold_map, mean_map, score_map = _propagate_region_folds(
+    fold_map, mean_map, score_map, _ = _propagate_region_folds(
         regions,
         nyquist=nyquist,
         reference=bootstrap_ref,

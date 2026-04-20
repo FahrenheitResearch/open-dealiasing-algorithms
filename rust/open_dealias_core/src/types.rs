@@ -101,6 +101,7 @@ pub struct RegionGraphResult {
     pub min_region_area: usize,
     pub min_valid_fraction: f64,
     pub skipped_sparse_blocks: usize,
+    pub pruned_disconnected_seedable_regions: usize,
     pub safety_fallback_applied: bool,
     pub safety_fallback_reason: Option<String>,
     pub candidate_cost: f64,
