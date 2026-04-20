@@ -11,7 +11,11 @@ pub(crate) fn metadata_json(value: Value) -> String {
     value.to_string()
 }
 
-pub(crate) fn require_1d(data: Vec<f64>, expected_len: usize, name: &str) -> Result<Array1<f64>, JsValue> {
+pub(crate) fn require_1d(
+    data: Vec<f64>,
+    expected_len: usize,
+    name: &str,
+) -> Result<Array1<f64>, JsValue> {
     if data.len() != expected_len {
         return Err(JsValue::from_str(&format!(
             "{name} length must be {expected_len}, got {}",
@@ -89,7 +93,9 @@ pub(crate) fn require_positive_nyquist(nyquist: f64, name: &str) -> Result<f64, 
     if nyquist.is_finite() && nyquist > 0.0 {
         Ok(nyquist)
     } else {
-        Err(JsValue::from_str(&format!("{name} must be positive, got {nyquist}")))
+        Err(JsValue::from_str(&format!(
+            "{name} must be positive, got {nyquist}"
+        )))
     }
 }
 

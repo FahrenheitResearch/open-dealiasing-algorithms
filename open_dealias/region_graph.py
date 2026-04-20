@@ -33,6 +33,8 @@ class _Region:
     mean_obs: float
     texture: float
     area: int
+    density: float = 1.0
+    seedable: bool = True
     neighbors: set[int] = field(default_factory=set)
     boundary_weight: dict[int, int] = field(default_factory=dict)
 
@@ -203,12 +205,16 @@ def _build_regions(
                 continue
             total_cells = int(block.size)
             valid_fraction = finite_count / total_cells
-            if finite_count < min_region_area or valid_fraction < min_valid_fraction:
+            mean_obs = _safe_nanmedian(block)
+            seedable = (
+                finite_count >= min_region_area
+                and valid_fraction >= min_valid_fraction
+                and np.isfinite(mean_obs)
+            )
+            if not seedable:
                 skipped_sparse_blocks += 1
-                continue
             region_id = len(regions)
             block_ids[bi, bj] = region_id
-            mean_obs = _safe_nanmedian(block)
             texture = _safe_nanmedian(texture_map[r0:r1, c0:c1])
             if not np.isfinite(texture):
                 texture = 0.0
@@ -222,6 +228,8 @@ def _build_regions(
                     mean_obs=mean_obs,
                     texture=texture,
                     area=finite_count,
+                    density=float(valid_fraction),
+                    seedable=bool(seedable),
                 )
             )
 
@@ -266,24 +274,25 @@ def _build_regions(
 
 
 def _pick_seed_region(regions: list[_Region], reference: np.ndarray | None) -> int:
-    if not regions:
+    candidate_regions = [region for region in regions if region.seedable]
+    if not candidate_regions:
         return -1
     if reference is None:
         scores = []
-        for region in regions:
+        for region in candidate_regions:
             score = abs(region.mean_obs) + 0.2 * region.texture - 0.01 * region.area
             scores.append(score)
-        return int(np.argmin(scores))
+        return int(candidate_regions[int(np.argmin(scores))].region_id)
 
     scores = []
-    for region in regions:
+    for region in candidate_regions:
         region_ref = _region_mean(reference, region.row0, region.row1, region.col0, region.col1)
         if np.isfinite(region_ref):
             score = abs(region.mean_obs - region_ref) + 0.1 * region.texture - 0.01 * region.area
         else:
             score = abs(region.mean_obs) + 0.1 * region.texture - 0.01 * region.area
         scores.append(score)
-    return int(np.argmin(scores))
+    return int(candidate_regions[int(np.argmin(scores))].region_id)
 
 
 def _best_fold_for_region(
@@ -354,6 +363,8 @@ def _propagate_region_folds(
         return fold_map, mean_map, score_map
 
     seed = _pick_seed_region(regions, reference)
+    if seed < 0:
+        return fold_map, mean_map, score_map
     seed_region = regions[seed]
     seed_fold, seed_mean, seed_score = _best_fold_for_region(
         seed_region,
@@ -374,6 +385,8 @@ def _propagate_region_folds(
         for nb in regions[rid].neighbors:
             if nb in fold_map:
                 continue
+            if not regions[nb].seedable:
+                continue
             if not any(parent in fold_map for parent in regions[nb].neighbors):
                 continue
             fold, mean, score = _best_fold_for_region(
@@ -390,24 +403,11 @@ def _propagate_region_folds(
             score_map[nb] = score
             queue.append(nb)
 
-    unresolved = [region.region_id for region in regions if region.region_id not in fold_map]
-    for rid in unresolved:
-        fold, mean, score = _best_fold_for_region(
-            regions[rid],
-            fold_map,
-            regions,
-            nyquist=nyquist,
-            reference=reference,
-            reference_weight=reference_weight,
-            max_abs_fold=max_abs_fold,
-        )
-        fold_map[rid] = fold
-        mean_map[rid] = mean
-        score_map[rid] = score
-
     for _ in range(max_iterations):
         changes = 0
         for region in regions:
+            if region.region_id not in fold_map:
+                continue
             current_fold = fold_map[region.region_id]
             current_mean = mean_map[region.region_id]
             current_score = score_map[region.region_id]
@@ -448,10 +448,13 @@ def _expand_region_solution(
     confidence = np.zeros(observed.shape, dtype=float)
     covered = np.zeros(observed.shape, dtype=bool)
     for region in regions:
+        if region.region_id not in mean_map:
+            continue
         corrected_mean = mean_map[region.region_id]
         coarse[region.row0:region.row1, region.col0:region.col1] = corrected_mean
         covered[region.row0:region.row1, region.col0:region.col1] = True
-        scale = max(0.30 * nyquist, 1.0 + 0.12 * region.texture)
+        density_penalty = max(0.25, region.density)
+        scale = max(0.30 * nyquist, 1.0 + 0.12 * region.texture) / density_penalty
         conf = float(np.clip(np.exp(-0.5 * (score_map[region.region_id] / max(scale, 1e-6)) ** 2), 0.05, 0.99))
         confidence[region.row0:region.row1, region.col0:region.col1] = conf
 
@@ -519,6 +522,8 @@ def _python_dealias_sweep_region_graph(
                     "paper_family": "PyARTRegionGraphLite",
                     "method": "region_graph_sweep",
                     "region_count": 0,
+                    "seedable_region_count": 0,
+                    "unresolved_region_count": 0,
                     "merge_iterations": 0,
                     "min_region_area": int(min_region_area),
                     "min_valid_fraction": float(min_valid_fraction),
@@ -550,6 +555,8 @@ def _python_dealias_sweep_region_graph(
                     "paper_family": "PyARTRegionGraphLite",
                     "method": "region_graph_sweep",
                     "region_count": 0,
+                    "seedable_region_count": 0,
+                    "unresolved_region_count": 0,
                     "merge_iterations": 0,
                     "block_shape": [int(v) for v in _choose_block_shape(obs.shape, block_shape)],
                     "wrap_azimuth": bool(wrap_azimuth),
@@ -588,7 +595,9 @@ def _python_dealias_sweep_region_graph(
         "paper_family": "PyARTRegionGraphLite",
         "method": "region_graph_sweep",
         "region_count": int(len(regions)),
+        "seedable_region_count": int(sum(region.seedable for region in regions)),
         "assigned_regions": int(len(fold_map)),
+        "unresolved_region_count": int(sum(region.region_id not in fold_map for region in regions)),
         "seed_region": int(_pick_seed_region(regions, ref)) if regions else None,
         "block_shape": [int(v) for v in _choose_block_shape(obs.shape, block_shape)],
         "merge_iterations": int(max_iterations),

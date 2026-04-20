@@ -124,7 +124,8 @@ pub fn dealias_sweep_jh01_packed(
 ) -> Result<FlatDealiasResult2D, JsValue> {
     let observed = require_2d(observed, rows, cols, "observed")?;
     let previous_corrected = optional_2d(previous_corrected, rows, cols, "previous_corrected")?;
-    let background_reference = optional_2d(background_reference, rows, cols, "background_reference")?;
+    let background_reference =
+        optional_2d(background_reference, rows, cols, "background_reference")?;
     let result = open_dealias_core::dealias_sweep_jh01(
         observed.view(),
         nyquist,
@@ -172,7 +173,8 @@ pub fn dealias_sweep_jh01_velocity(
 ) -> Result<FlatVelocityResult2D, JsValue> {
     let observed = require_2d(observed, rows, cols, "observed")?;
     let previous_corrected = optional_2d(previous_corrected, rows, cols, "previous_corrected")?;
-    let background_reference = optional_2d(background_reference, rows, cols, "background_reference")?;
+    let background_reference =
+        optional_2d(background_reference, rows, cols, "background_reference")?;
     let result = open_dealias_core::dealias_sweep_jh01(
         observed.view(),
         nyquist,
@@ -240,8 +242,12 @@ pub fn dealias_volume_jh01_packed(
         azimuth_deg.view(),
         elevation_deg.view(),
         previous_volume.as_ref().map(|value| value.view()),
-        background_u.as_ref().map(|value| value.as_slice().expect("contiguous")),
-        background_v.as_ref().map(|value| value.as_slice().expect("contiguous")),
+        background_u
+            .as_ref()
+            .map(|value| value.as_slice().expect("contiguous")),
+        background_v
+            .as_ref()
+            .map(|value| value.as_slice().expect("contiguous")),
         shift_az,
         shift_range,
         wrap_azimuth,

@@ -1,6 +1,4 @@
-use crate::common::{
-    array_to_vec_f64, array_to_vec_i16, js_error, require_2d, require_3d,
-};
+use crate::common::{array_to_vec_f64, array_to_vec_i16, js_error, require_2d, require_3d};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(js_name = wrapToNyquistFlat)]
@@ -18,7 +16,9 @@ pub fn fold_counts_flat(
     nyquist: f64,
 ) -> Result<Vec<i16>, JsValue> {
     if unfolded.len() != observed.len() {
-        return Err(JsValue::from_str("unfolded and observed must have the same length"));
+        return Err(JsValue::from_str(
+            "unfolded and observed must have the same length",
+        ));
     }
     let unfolded = ndarray::Array1::from_vec(unfolded).into_dyn();
     let observed = ndarray::Array1::from_vec(observed).into_dyn();
@@ -35,18 +35,15 @@ pub fn unfold_to_reference_flat(
     max_abs_fold: i16,
 ) -> Result<Vec<f64>, JsValue> {
     if observed.len() != reference.len() {
-        return Err(JsValue::from_str("observed and reference must have the same length"));
+        return Err(JsValue::from_str(
+            "observed and reference must have the same length",
+        ));
     }
     let observed = ndarray::Array1::from_vec(observed).into_dyn();
     let reference = ndarray::Array1::from_vec(reference).into_dyn();
-    open_dealias_core::unfold_to_reference(
-        observed.view(),
-        reference.view(),
-        nyquist,
-        max_abs_fold,
-    )
-    .map(array_to_vec_f64)
-    .map_err(js_error)
+    open_dealias_core::unfold_to_reference(observed.view(), reference.view(), nyquist, max_abs_fold)
+        .map(array_to_vec_f64)
+        .map_err(js_error)
 }
 
 #[wasm_bindgen(js_name = shift2d)]

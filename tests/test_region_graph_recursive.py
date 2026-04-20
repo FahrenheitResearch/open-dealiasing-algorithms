@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 
 from open_dealias import build_reference_from_uv, unfold_to_reference, wrap_to_nyquist
+from open_dealias._rust_bridge import backend_policy
 from open_dealias.region_graph import dealias_sweep_region_graph
 from open_dealias.recursive import dealias_sweep_recursive
-from open_dealias.variational import dealias_sweep_variational
 from open_dealias.variational import dealias_sweep_variational
 
 
@@ -55,7 +55,8 @@ def test_region_graph_recovers_fold_progression_better_than_coarse_reference():
     obs = wrap_to_nyquist(truth, 10.0)
 
     baseline = unfold_to_reference(obs, coarse_reference, 10.0)
-    result = dealias_sweep_region_graph(obs, 10.0, reference=coarse_reference)
+    with backend_policy("python"):
+        result = dealias_sweep_region_graph(obs, 10.0, reference=coarse_reference)
 
     assert np.any(result.folds != 0)
     assert result.metadata["region_count"] > 4
@@ -91,9 +92,13 @@ def test_region_graph_skips_sparse_blocks_and_leaves_them_unresolved():
     obs[0, 0] = 5.0
     obs[0, 1] = 6.0
 
-    result = dealias_sweep_region_graph(obs, 10.0, block_shape=(4, 4))
+    with backend_policy("python"):
+        result = dealias_sweep_region_graph(obs, 10.0, block_shape=(4, 4))
 
-    assert result.metadata["region_count"] == 0
+    assert result.metadata["region_count"] == 1
+    assert result.metadata["seedable_region_count"] == 0
+    assert result.metadata["assigned_regions"] == 0
+    assert result.metadata["unresolved_region_count"] == 1
     assert result.metadata["skipped_sparse_blocks"] >= 1
     assert result.metadata["min_region_area"] == 4
     assert result.metadata["min_valid_fraction"] == 0.15
@@ -103,19 +108,21 @@ def test_region_graph_skips_sparse_blocks_and_leaves_them_unresolved():
 def test_region_graph_missing_wedge_stays_conservative_without_opposite_sign_sector():
     truth, obs, reference, sector = _build_missing_wedge_case()
 
-    result = dealias_sweep_region_graph(
-        obs,
-        10.0,
-        reference=reference,
-        block_shape=(8, 8),
-        min_region_area=8,
-        min_valid_fraction=0.30,
-    )
+    with backend_policy("python"):
+        result = dealias_sweep_region_graph(
+            obs,
+            10.0,
+            reference=reference,
+            block_shape=(8, 8),
+            min_region_area=8,
+            min_valid_fraction=0.30,
+        )
 
     overlap = np.isfinite(truth) & np.isfinite(result.velocity)
     assert np.any(overlap)
     assert _sector_sign_mismatch_count(truth, result.velocity, sector) == 0
     assert result.metadata["skipped_sparse_blocks"] >= 1
+    assert result.metadata["assigned_regions"] < result.metadata["region_count"]
     assert result.result_state.unresolved_gates > 0
     assert mae(result.velocity[overlap], truth[overlap]) < 1.5
 
@@ -123,15 +130,16 @@ def test_region_graph_missing_wedge_stays_conservative_without_opposite_sign_sec
 def test_variational_missing_wedge_bootstrap_does_not_create_opposite_sign_sector():
     truth, obs, reference, sector = _build_missing_wedge_case()
 
-    region_graph = dealias_sweep_region_graph(
-        obs,
-        10.0,
-        reference=reference,
-        block_shape=(8, 8),
-        min_region_area=8,
-        min_valid_fraction=0.30,
-    )
-    variational = dealias_sweep_variational(obs, 10.0, reference=reference, max_iterations=6)
+    with backend_policy("python"):
+        region_graph = dealias_sweep_region_graph(
+            obs,
+            10.0,
+            reference=reference,
+            block_shape=(8, 8),
+            min_region_area=8,
+            min_valid_fraction=0.30,
+        )
+        variational = dealias_sweep_variational(obs, 10.0, reference=reference, max_iterations=6)
 
     assert variational.metadata["bootstrap_method"] == "2d_multipass"
     assert _sector_sign_mismatch_count(truth, variational.velocity, sector) == 0
@@ -144,6 +152,7 @@ def test_variational_defaults_to_zw06_bootstrap():
     truth = build_reference_from_uv(az, 64, u=14.0, v=-3.0)
     obs = wrap_to_nyquist(truth, 10.0)
 
-    result = dealias_sweep_variational(obs, 10.0)
+    with backend_policy("python"):
+        result = dealias_sweep_variational(obs, 10.0)
 
     assert result.metadata["bootstrap_method"] in {"2d_multipass", "zw06"}

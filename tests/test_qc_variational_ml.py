@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from open_dealias import build_reference_from_uv, unfold_to_reference, wrap_to_nyquist
+from open_dealias._rust_bridge import backend_policy
 from open_dealias.ml import dealias_sweep_ml, fit_ml_reference_model
 from open_dealias.qc import apply_velocity_qc, build_velocity_qc_mask, estimate_velocity_texture
 from open_dealias.variational import dealias_sweep_variational
@@ -57,10 +58,12 @@ def test_variational_improves_over_coarse_reference_branch():
     obs = wrap_to_nyquist(truth, 10.0)
 
     baseline = unfold_to_reference(obs, coarse_reference, 10.0)
-    result = dealias_sweep_variational(obs, 10.0, reference=coarse_reference)
+    with backend_policy("python"):
+        result = dealias_sweep_variational(obs, 10.0, reference=coarse_reference)
 
     assert np.any(result.folds != 0)
     assert result.metadata["iterations_used"] >= 1
+    assert result.metadata["bootstrap_method"] == "2d_multipass"
     assert mae(result.velocity, truth) + 0.8 < mae(baseline, truth)
 
 
