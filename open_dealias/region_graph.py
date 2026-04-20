@@ -101,6 +101,18 @@ def _maybe_apply_zw06_safety_fallback(
 ) -> DealiasResult:
     if not enabled or not np.any(np.isfinite(result.velocity)):
         return result
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    region_count = int(metadata.get("region_count", 0) or 0)
+    seedable_region_count = int(metadata.get("seedable_region_count", region_count) or 0)
+    unresolved_region_count = int(metadata.get("unresolved_region_count", 0) or 0)
+    skipped_sparse_blocks = int(metadata.get("skipped_sparse_blocks", 0) or 0)
+    suspicious = (
+        skipped_sparse_blocks > 0
+        or unresolved_region_count > 0
+        or seedable_region_count < region_count
+    )
+    if not suspicious:
+        return result
 
     zw06 = dealias_sweep_zw06(
         obs,
