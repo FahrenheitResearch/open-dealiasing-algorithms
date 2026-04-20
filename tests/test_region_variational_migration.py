@@ -38,7 +38,7 @@ def test_region_variational_pair_keeps_python_parity_on_synthetic_case():
     assert result["variational"]["parity"]["folds_equal"] is True
     assert result["region_graph"]["metadata"]["region_count"] > 0
     assert result["variational"]["metadata"]["iterations_used"] >= 1
-    assert result["variational"]["metadata"]["bootstrap_method"] == "region_graph_sweep"
+    assert result["variational"]["metadata"]["bootstrap_method"] == "2d_multipass"
 
 
 def test_local_archive_data_is_discoverable_when_present():

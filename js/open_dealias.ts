@@ -83,7 +83,20 @@ export interface RegionGraphOptions {
 
 export interface RecursiveOptions extends RegionGraphOptions {}
 
-export interface VariationalOptions extends RegionGraphOptions {}
+export type VariationalBootstrapMethod = "zw06" | "region_graph";
+
+export interface VariationalOptions extends RegionGraphOptions {
+  bootstrapMethod?: VariationalBootstrapMethod;
+  bootstrapReferenceWeight?: number;
+  bootstrapIterations?: number;
+  bootstrapMaxAbsFold?: number;
+  bootstrapWeakThresholdFraction?: number;
+  bootstrapMaxIterationsPerPass?: number;
+  bootstrapIncludeDiagonals?: boolean;
+  bootstrapRecenterWithoutReference?: boolean;
+  neighborWeight?: number;
+  smoothnessWeight?: number;
+}
 
 export interface MlOptions extends RegionGraphOptions {}
 
@@ -399,9 +412,54 @@ function packReference(reference: PackedSweep | number[][] | undefined): PackedS
   return packSweep(reference);
 }
 
+function unpackReference(reference: PackedSweep | number[][] | undefined): number[][] | undefined {
+  if (reference === undefined) return undefined;
+  return isPackedSweep(reference) ? unpackSweep(reference) : reference;
+}
+
 function packVolumeReference(reference: PackedVolume | number[][][] | undefined): PackedVolume | undefined {
   if (reference === undefined) return undefined;
   return packVolume(reference);
+}
+
+export function normalizeRegionGraphOptions(options?: RegionGraphOptions): RegionGraphOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+  return {
+    ...options,
+    reference: options.reference,
+    referenceWeight: options.referenceWeight ?? 0.75,
+    maxIterations: options.maxIterations ?? 6,
+    maxAbsFold: options.maxAbsFold ?? 8,
+    wrapAzimuth: options.wrapAzimuth ?? true,
+    minRegionArea: options.minRegionArea ?? 4,
+    minValidFraction: options.minValidFraction ?? 0.15,
+  };
+}
+
+export function normalizeVariationalOptions(options?: VariationalOptions): VariationalOptions {
+  return {
+    ...(options ?? {}),
+    reference: options?.reference,
+    blockRows: options?.blockRows,
+    blockCols: options?.blockCols,
+    maxAbsFold: options?.maxAbsFold ?? 8,
+    wrapAzimuth: options?.wrapAzimuth ?? true,
+    minRegionArea: options?.minRegionArea ?? 4,
+    minValidFraction: options?.minValidFraction ?? 0.15,
+    referenceWeight: options?.referenceWeight ?? 0.50,
+    bootstrapMethod: options?.bootstrapMethod ?? "zw06",
+    bootstrapReferenceWeight: options?.bootstrapReferenceWeight ?? 0.75,
+    bootstrapIterations: options?.bootstrapIterations ?? 6,
+    bootstrapMaxAbsFold: options?.bootstrapMaxAbsFold ?? 8,
+    bootstrapWeakThresholdFraction: options?.bootstrapWeakThresholdFraction ?? 0.35,
+    bootstrapMaxIterationsPerPass: options?.bootstrapMaxIterationsPerPass ?? 12,
+    bootstrapIncludeDiagonals: options?.bootstrapIncludeDiagonals ?? true,
+    bootstrapRecenterWithoutReference: options?.bootstrapRecenterWithoutReference ?? true,
+    neighborWeight: options?.neighborWeight ?? 1.0,
+    smoothnessWeight: options?.smoothnessWeight ?? 0.20,
+  };
 }
 
 function packedResultFromMatrix(result: DealiasResult): PackedDealiasResult {
@@ -680,7 +738,8 @@ function dealiasSweepJH01Js(observed: number[][], nyquist: number, previousCorre
 }
 
 function dealiasSweepRegionGraphJs(observed: number[][], nyquist: number, options?: RegionGraphOptions): DealiasResult {
-  const reference = options?.reference ? (isPackedSweep(options.reference) ? unpackSweep(options.reference) : options.reference) : undefined;
+  const normalized = normalizeRegionGraphOptions(options);
+  const reference = unpackReference(normalized?.reference);
   const result = dealiasSweepZW06Js(observed, nyquist, reference);
   return { ...result, metadata: { ...result.metadata, method: "region_graph", approximation: "zw06_proxy" } };
 }
@@ -691,8 +750,21 @@ function dealiasSweepRecursiveJs(observed: number[][], nyquist: number, options?
 }
 
 function dealiasSweepVariationalJs(observed: number[][], nyquist: number, options?: VariationalOptions): DealiasResult {
-  const result = dealiasSweepRegionGraphJs(observed, nyquist, options);
-  return { ...result, metadata: { ...result.metadata, method: "variational", approximation: "region_graph_proxy" } };
+  const normalized = normalizeVariationalOptions(options);
+  const reference = unpackReference(normalized.reference);
+  const bootstrapMethod = normalized.bootstrapMethod ?? "zw06";
+  const result = bootstrapMethod === "region_graph"
+    ? dealiasSweepRegionGraphJs(observed, nyquist, normalized)
+    : dealiasSweepZW06Js(observed, nyquist, reference);
+  return {
+    ...result,
+    metadata: {
+      ...result.metadata,
+      method: "variational",
+      approximation: bootstrapMethod === "region_graph" ? "region_graph_proxy" : "zw06_proxy",
+      bootstrap_method: bootstrapMethod,
+    },
+  };
 }
 
 function dealiasSweepMLJs(observed: number[][], nyquist: number, options?: MlOptions): DealiasResult {
@@ -1036,7 +1108,8 @@ export function dealiasSweepRegionGraphPacked(observed: PackedSweep | number[][]
   const packedObserved = packSweep(observed);
   const backend = getOpenDealiasBackend();
   const method = getBackendMethod(backend, "dealiasSweepRegionGraphPacked");
-  const normalizedOptions = options ? { ...options, reference: packReference(options.reference) } : undefined;
+  const normalizedInput = normalizeRegionGraphOptions(options);
+  const normalizedOptions = normalizedInput ? { ...normalizedInput, reference: packReference(normalizedInput.reference) } : undefined;
   if (typeof method === "function") {
     const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
     return normalizePackedResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
@@ -1048,7 +1121,8 @@ export function dealiasSweepRegionGraphVelocityPacked(observed: PackedSweep | nu
   const packedObserved = packSweep(observed);
   const backend = getOpenDealiasBackend();
   const method = getBackendMethod(backend, "dealiasSweepRegionGraphVelocityPacked");
-  const normalizedOptions = options ? { ...options, reference: packReference(options.reference) } : undefined;
+  const normalizedInput = normalizeRegionGraphOptions(options);
+  const normalizedOptions = normalizedInput ? { ...normalizedInput, reference: packReference(normalizedInput.reference) } : undefined;
   if (typeof method === "function") {
     const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
     return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
@@ -1080,7 +1154,8 @@ export function dealiasSweepVariationalPacked(observed: PackedSweep | number[][]
   const packedObserved = packSweep(observed);
   const backend = getOpenDealiasBackend();
   const method = getBackendMethod(backend, "dealiasSweepVariationalPacked");
-  const normalizedOptions = options ? { ...options, reference: packReference(options.reference) } : undefined;
+  const normalizedInput = normalizeVariationalOptions(options);
+  const normalizedOptions = { ...normalizedInput, reference: packReference(normalizedInput.reference) };
   if (typeof method === "function") {
     const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
     return normalizePackedResult(result, packedObserved.azimuthCount, packedObserved.gateCount);
@@ -1092,7 +1167,8 @@ export function dealiasSweepVariationalVelocityPacked(observed: PackedSweep | nu
   const packedObserved = packSweep(observed);
   const backend = getOpenDealiasBackend();
   const method = getBackendMethod(backend, "dealiasSweepVariationalVelocityPacked");
-  const normalizedOptions = options ? { ...options, reference: packReference(options.reference) } : undefined;
+  const normalizedInput = normalizeVariationalOptions(options);
+  const normalizedOptions = { ...normalizedInput, reference: packReference(normalizedInput.reference) };
   if (typeof method === "function") {
     const result = method.call(backend, packedObserved, nyquist, normalizedOptions);
     return normalizePackedVelocityResult(result, packedObserved.azimuthCount, packedObserved.gateCount);

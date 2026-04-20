@@ -1,5 +1,7 @@
 import {
   buildPackedReferenceFromUV,
+  normalizeRegionGraphOptions,
+  normalizeVariationalOptions,
   packSweep,
   packVolume,
   type DualPrfOptions,
@@ -84,6 +86,16 @@ function normalizeVelocityResult(raw: Record<string, unknown>): PackedVelocityRe
   return result;
 }
 
+function normalizeSweepVelocityFromRefine(raw: Record<string, unknown>): PackedVelocityResult {
+  const result = normalizeSweepResult(raw);
+  return {
+    velocity: Float32Array.from(result.velocity),
+    azimuthCount: result.azimuthCount,
+    gateCount: result.gateCount,
+    metadata: { ...result.metadata, output: "velocity_only" },
+  };
+}
+
 function normalizeNyquist(nyquist: number | ArrayLike<number>, sweepCount: number): number[] {
   if (typeof nyquist === "number") {
     return [nyquist];
@@ -131,6 +143,183 @@ export async function createOpenDealiasBackend(): Promise<OpenDealiasBackend> {
 export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenDealiasBackend {
   const call = <T>(name: string, ...args: unknown[]): T =>
     requireFunction<(...callArgs: unknown[]) => T>(module, name)(...args);
+
+  const callRegionGraph = (observed: PackedSweep, nyquist: number, options?: RegionGraphOptions): PackedDealiasResult => {
+    const normalized = normalizeRegionGraphOptions(options);
+    const reference = normalized?.reference ? packSweep(normalized.reference) : undefined;
+    return normalizeSweepResult(call<Record<string, unknown>>(
+      "dealiasSweepRegionGraph",
+      observed.data,
+      observed.azimuthCount,
+      observed.gateCount,
+      nyquist,
+      reference?.data ?? [],
+      normalized?.blockRows,
+      normalized?.blockCols,
+      normalized?.referenceWeight ?? 0.75,
+      normalized?.maxIterations ?? 6,
+      normalized?.maxAbsFold ?? 8,
+      normalized?.wrapAzimuth ?? true,
+      normalized?.minRegionArea ?? 4,
+      normalized?.minValidFraction ?? 0.15,
+    ));
+  };
+
+  const callRegionGraphVelocity = (observed: PackedSweep, nyquist: number, options?: RegionGraphOptions): PackedVelocityResult => {
+    const normalized = normalizeRegionGraphOptions(options);
+    const reference = normalized?.reference ? packSweep(normalized.reference) : undefined;
+    return normalizeVelocityResult(call<Record<string, unknown>>(
+      "dealiasSweepRegionGraphVelocity",
+      observed.data,
+      observed.azimuthCount,
+      observed.gateCount,
+      nyquist,
+      reference?.data ?? [],
+      normalized?.blockRows,
+      normalized?.blockCols,
+      normalized?.referenceWeight ?? 0.75,
+      normalized?.maxIterations ?? 6,
+      normalized?.maxAbsFold ?? 8,
+      normalized?.wrapAzimuth ?? true,
+      normalized?.minRegionArea ?? 4,
+      normalized?.minValidFraction ?? 0.15,
+    ));
+  };
+
+  const callVariational = (observed: PackedSweep, nyquist: number, options?: VariationalOptions): PackedDealiasResult => {
+    const normalized = normalizeVariationalOptions(options);
+    const reference = normalized.reference ? packSweep(normalized.reference) : undefined;
+    if (normalized.bootstrapMethod === "region_graph") {
+      const result = normalizeSweepResult(call<Record<string, unknown>>(
+        "dealiasSweepVariational",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        reference?.data ?? [],
+        normalized.blockRows,
+        normalized.blockCols,
+        normalized.bootstrapReferenceWeight ?? 0.75,
+        normalized.bootstrapIterations ?? 6,
+        normalized.bootstrapMaxAbsFold ?? 8,
+        normalized.minRegionArea ?? 4,
+        normalized.minValidFraction ?? 0.15,
+        normalized.maxAbsFold ?? 8,
+        normalized.neighborWeight ?? 1.0,
+        normalized.referenceWeight ?? 0.50,
+        normalized.smoothnessWeight ?? 0.20,
+        normalized.maxIterations ?? 8,
+        normalized.wrapAzimuth ?? true,
+      ));
+      return {
+        ...result,
+        metadata: { ...result.metadata, bootstrap_method: "region_graph" },
+      };
+    }
+
+    const bootstrap = call<Record<string, unknown>>(
+      "dealiasSweepZw06Velocity",
+      observed.data,
+      observed.azimuthCount,
+      observed.gateCount,
+      nyquist,
+      reference?.data ?? [],
+      normalized.bootstrapWeakThresholdFraction ?? 0.35,
+      normalized.wrapAzimuth ?? true,
+      normalized.bootstrapMaxIterationsPerPass ?? 12,
+      normalized.bootstrapIncludeDiagonals ?? true,
+      normalized.bootstrapRecenterWithoutReference ?? true,
+    );
+    const initialCorrected = bootstrap.velocity instanceof Float32Array
+      ? Float64Array.from(bootstrap.velocity)
+      : Float64Array.from(bootstrap.velocity as ArrayLike<number>);
+    maybeFree(bootstrap);
+    const result = normalizeSweepResult(call<Record<string, unknown>>(
+      "dealiasSweepVariationalRefine",
+      observed.data,
+      observed.azimuthCount,
+      observed.gateCount,
+      initialCorrected,
+      nyquist,
+      reference?.data ?? [],
+      normalized.maxAbsFold ?? 8,
+      normalized.neighborWeight ?? 1.0,
+      normalized.referenceWeight ?? 0.50,
+      normalized.smoothnessWeight ?? 0.20,
+      normalized.maxIterations ?? 8,
+      normalized.wrapAzimuth ?? true,
+    ));
+    return {
+      ...result,
+      metadata: { ...result.metadata, bootstrap_method: "zw06" },
+    };
+  };
+
+  const callVariationalVelocity = (observed: PackedSweep, nyquist: number, options?: VariationalOptions): PackedVelocityResult => {
+    const normalized = normalizeVariationalOptions(options);
+    const reference = normalized.reference ? packSweep(normalized.reference) : undefined;
+    if (normalized.bootstrapMethod === "region_graph") {
+      const result = normalizeVelocityResult(call<Record<string, unknown>>(
+        "dealiasSweepVariationalVelocity",
+        observed.data,
+        observed.azimuthCount,
+        observed.gateCount,
+        nyquist,
+        reference?.data ?? [],
+        normalized.blockRows,
+        normalized.blockCols,
+        normalized.minRegionArea ?? 4,
+        normalized.minValidFraction ?? 0.15,
+        normalized.maxAbsFold ?? 8,
+        normalized.neighborWeight ?? 1.0,
+        normalized.referenceWeight ?? 0.50,
+        normalized.smoothnessWeight ?? 0.20,
+        normalized.maxIterations ?? 8,
+        normalized.wrapAzimuth ?? true,
+      ));
+      return {
+        ...result,
+        metadata: { ...result.metadata, bootstrap_method: "region_graph" },
+      };
+    }
+
+    const bootstrap = call<Record<string, unknown>>(
+      "dealiasSweepZw06Velocity",
+      observed.data,
+      observed.azimuthCount,
+      observed.gateCount,
+      nyquist,
+      reference?.data ?? [],
+      normalized.bootstrapWeakThresholdFraction ?? 0.35,
+      normalized.wrapAzimuth ?? true,
+      normalized.bootstrapMaxIterationsPerPass ?? 12,
+      normalized.bootstrapIncludeDiagonals ?? true,
+      normalized.bootstrapRecenterWithoutReference ?? true,
+    );
+    const initialCorrected = bootstrap.velocity instanceof Float32Array
+      ? Float64Array.from(bootstrap.velocity)
+      : Float64Array.from(bootstrap.velocity as ArrayLike<number>);
+    maybeFree(bootstrap);
+    const result = normalizeSweepVelocityFromRefine(call<Record<string, unknown>>(
+      "dealiasSweepVariationalRefine",
+      observed.data,
+      observed.azimuthCount,
+      observed.gateCount,
+      initialCorrected,
+      nyquist,
+      reference?.data ?? [],
+      normalized.maxAbsFold ?? 8,
+      normalized.neighborWeight ?? 1.0,
+      normalized.referenceWeight ?? 0.50,
+      normalized.smoothnessWeight ?? 0.20,
+      normalized.maxIterations ?? 8,
+      normalized.wrapAzimuth ?? true,
+    ));
+    return {
+      ...result,
+      metadata: { ...result.metadata, bootstrap_method: "zw06" },
+    };
+  };
 
   return {
     name: "open-dealias-wasm",
@@ -270,42 +459,10 @@ export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenD
       ));
     },
     dealiasSweepRegionGraphPacked(observed, nyquist, options) {
-      const reference = options?.reference ? packSweep(options.reference) : undefined;
-      return normalizeSweepResult(call<Record<string, unknown>>(
-        "dealiasSweepRegionGraph",
-        observed.data,
-        observed.azimuthCount,
-        observed.gateCount,
-        nyquist,
-        reference?.data ?? [],
-        options?.blockRows,
-        options?.blockCols,
-        options?.referenceWeight ?? 0.75,
-        options?.maxIterations ?? 6,
-        options?.maxAbsFold ?? 8,
-        options?.wrapAzimuth ?? true,
-        options?.minRegionArea ?? 4,
-        options?.minValidFraction ?? 0.15,
-      ));
+      return callRegionGraph(observed, nyquist, options);
     },
     dealiasSweepRegionGraphVelocityPacked(observed, nyquist, options) {
-      const reference = options?.reference ? packSweep(options.reference) : undefined;
-      return normalizeVelocityResult(call<Record<string, unknown>>(
-        "dealiasSweepRegionGraphVelocity",
-        observed.data,
-        observed.azimuthCount,
-        observed.gateCount,
-        nyquist,
-        reference?.data ?? [],
-        options?.blockRows,
-        options?.blockCols,
-        options?.referenceWeight ?? 0.75,
-        options?.maxIterations ?? 6,
-        options?.maxAbsFold ?? 8,
-        options?.wrapAzimuth ?? true,
-        options?.minRegionArea ?? 4,
-        options?.minValidFraction ?? 0.15,
-      ));
+      return callRegionGraphVelocity(observed, nyquist, options);
     },
     dealiasSweepRecursivePacked(observed, nyquist, options) {
       const reference = options?.reference ? packSweep(options.reference) : undefined;
@@ -325,49 +482,10 @@ export function createOpenDealiasBackendFromModule(module: RawWasmModule): OpenD
       ));
     },
     dealiasSweepVariationalPacked(observed, nyquist, options) {
-      const reference = options?.reference ? packSweep(options.reference) : undefined;
-      return normalizeSweepResult(call<Record<string, unknown>>(
-        "dealiasSweepVariational",
-        observed.data,
-        observed.azimuthCount,
-        observed.gateCount,
-        nyquist,
-        reference?.data ?? [],
-        options?.blockRows,
-        options?.blockCols,
-        options?.referenceWeight ?? 0.75,
-        options?.maxIterations ?? 6,
-        options?.maxAbsFold ?? 8,
-        options?.minRegionArea ?? 4,
-        options?.minValidFraction ?? 0.15,
-        8,
-        1.0,
-        0.50,
-        0.20,
-        8,
-        options?.wrapAzimuth ?? true,
-      ));
+      return callVariational(observed, nyquist, options);
     },
     dealiasSweepVariationalVelocityPacked(observed, nyquist, options) {
-      const reference = options?.reference ? packSweep(options.reference) : undefined;
-      return normalizeVelocityResult(call<Record<string, unknown>>(
-        "dealiasSweepVariationalVelocity",
-        observed.data,
-        observed.azimuthCount,
-        observed.gateCount,
-        nyquist,
-        reference?.data ?? [],
-        options?.blockRows,
-        options?.blockCols,
-        options?.minRegionArea ?? 4,
-        options?.minValidFraction ?? 0.15,
-        8,
-        1.0,
-        0.50,
-        0.20,
-        8,
-        options?.wrapAzimuth ?? true,
-      ));
+      return callVariationalVelocity(observed, nyquist, options);
     },
     dealiasDualPrfPacked(lowObserved, highObserved, lowNyquist, highNyquist, options) {
       return normalizeSweepResult(call<Record<string, unknown>>(

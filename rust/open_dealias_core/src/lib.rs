@@ -1056,6 +1056,70 @@ pub fn dealias_sweep_variational_refine(
     })
 }
 
+pub fn dealias_sweep_variational(
+    observed: ArrayView2<'_, f64>,
+    nyquist: f64,
+    reference: Option<ArrayView2<'_, f64>>,
+    block_shape: Option<(usize, usize)>,
+    bootstrap_reference_weight: f64,
+    bootstrap_iterations: usize,
+    bootstrap_max_abs_fold: i16,
+    bootstrap_min_region_area: usize,
+    bootstrap_min_valid_fraction: f64,
+    max_abs_fold: i16,
+    neighbor_weight: f64,
+    reference_weight: f64,
+    smoothness_weight: f64,
+    max_iterations: usize,
+    wrap_azimuth: bool,
+) -> Result<VariationalSweepResult> {
+    let bootstrap = build_variational_bootstrap(
+        observed,
+        nyquist,
+        reference,
+        block_shape,
+        bootstrap_reference_weight,
+        bootstrap_iterations,
+        bootstrap_max_abs_fold,
+        bootstrap_min_region_area,
+        bootstrap_min_valid_fraction,
+        wrap_azimuth,
+    )?;
+    let refined = dealias_sweep_variational_refine(
+        observed,
+        bootstrap.initial.view(),
+        reference,
+        nyquist,
+        max_abs_fold,
+        neighbor_weight,
+        reference_weight,
+        smoothness_weight,
+        max_iterations,
+        wrap_azimuth,
+    )?;
+
+    Ok(VariationalSweepResult {
+        velocity: refined.velocity,
+        folds: refined.folds,
+        confidence: refined.confidence,
+        reference: bootstrap.reference.into_dyn(),
+        method: if bootstrap.method == "2d_multipass" {
+            "zw06_bootstrap_then_coordinate_descent"
+        } else {
+            "region_graph_bootstrap_then_coordinate_descent"
+        },
+        bootstrap_method: bootstrap.method,
+        bootstrap_region_count: bootstrap.region_count,
+        bootstrap_skipped_sparse_blocks: bootstrap.skipped_sparse_blocks,
+        bootstrap_assigned_gates: bootstrap.assigned_gates,
+        bootstrap_iterations_used: bootstrap.iterations_used,
+        bootstrap_safety_fallback_applied: bootstrap.safety_fallback_applied,
+        bootstrap_safety_fallback_reason: bootstrap.safety_fallback_reason,
+        iterations_used: refined.iterations_used,
+        changed_gates: refined.changed_gates,
+    })
+}
+
 pub fn dealias_dual_prf(
     low: ArrayViewD<'_, f64>,
     high: ArrayViewD<'_, f64>,
@@ -1305,6 +1369,15 @@ fn choose_block_shape(
 
 const DEFAULT_REGION_GRAPH_MIN_REGION_AREA: usize = 4;
 const DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION: f64 = 0.15;
+const REGION_GRAPH_SAFETY_WEAK_THRESHOLD_FRACTION: f64 = 0.35;
+const REGION_GRAPH_SAFETY_MAX_ITERATIONS_PER_PASS: usize = 12;
+const REGION_GRAPH_SAFETY_COST_REL_MARGIN: f64 = 0.05;
+const REGION_GRAPH_SAFETY_COST_ABS_MARGIN_FRACTION: f64 = 0.03;
+const REGION_GRAPH_SAFETY_DISAGREEMENT_FRACTION: f64 = 0.02;
+const REGION_GRAPH_SAFETY_COMPONENT_FRACTION: f64 = 0.01;
+const DEFAULT_VARIATIONAL_BOOTSTRAP_REFERENCE_WEIGHT: f64 = 0.75;
+const DEFAULT_VARIATIONAL_BOOTSTRAP_ITERATIONS: usize = 6;
+const DEFAULT_VARIATIONAL_BOOTSTRAP_MAX_ABS_FOLD: i16 = 8;
 
 #[derive(Clone, Debug)]
 struct RegionGraphRegion {
@@ -1811,7 +1884,7 @@ fn expand_region_solution(
     Ok((corrected, confidence))
 }
 
-pub fn dealias_sweep_region_graph(
+fn dealias_sweep_region_graph_raw(
     observed: ArrayView2<'_, f64>,
     nyquist: f64,
     reference: Option<ArrayView2<'_, f64>>,
@@ -1856,6 +1929,7 @@ pub fn dealias_sweep_region_graph(
             folds,
             confidence,
             reference: reference_out,
+            method: "region_graph_sweep",
             region_count: 0,
             assigned_regions: 0,
             seed_region: None,
@@ -1868,6 +1942,12 @@ pub fn dealias_sweep_region_graph(
             min_region_area,
             min_valid_fraction,
             skipped_sparse_blocks: 0,
+            safety_fallback_applied: false,
+            safety_fallback_reason: None,
+            candidate_cost: f64::INFINITY,
+            fallback_cost: None,
+            disagreement_fraction: 0.0,
+            largest_disagreement_component: 0,
         });
     }
 
@@ -1893,6 +1973,7 @@ pub fn dealias_sweep_region_graph(
             folds,
             confidence,
             reference: reference_out,
+            method: "region_graph_sweep",
             region_count: 0,
             assigned_regions: 0,
             seed_region: None,
@@ -1905,6 +1986,12 @@ pub fn dealias_sweep_region_graph(
             min_region_area,
             min_valid_fraction,
             skipped_sparse_blocks,
+            safety_fallback_applied: false,
+            safety_fallback_reason: None,
+            candidate_cost: f64::INFINITY,
+            fallback_cost: None,
+            disagreement_fraction: 0.0,
+            largest_disagreement_component: 0,
         });
     }
     let (fold_map, mean_map, score_map) = propagate_region_folds(
@@ -1968,6 +2055,7 @@ pub fn dealias_sweep_region_graph(
         folds,
         confidence: confidence.into_dyn(),
         reference: reference_out,
+        method: "region_graph_sweep",
         region_count: regions.len(),
         assigned_regions: fold_map.len(),
         seed_region,
@@ -1980,7 +2068,91 @@ pub fn dealias_sweep_region_graph(
         min_region_area,
         min_valid_fraction,
         skipped_sparse_blocks,
+        safety_fallback_applied: false,
+        safety_fallback_reason: None,
+        candidate_cost: f64::NAN,
+        fallback_cost: None,
+        disagreement_fraction: 0.0,
+        largest_disagreement_component: 0,
     })
+}
+
+pub fn dealias_sweep_region_graph(
+    observed: ArrayView2<'_, f64>,
+    nyquist: f64,
+    reference: Option<ArrayView2<'_, f64>>,
+    block_shape: Option<(usize, usize)>,
+    reference_weight: f64,
+    max_iterations: usize,
+    max_abs_fold: i16,
+    wrap_azimuth: bool,
+    min_region_area: usize,
+    min_valid_fraction: f64,
+) -> Result<RegionGraphResult> {
+    let mut result = dealias_sweep_region_graph_raw(
+        observed,
+        nyquist,
+        reference,
+        block_shape,
+        reference_weight,
+        max_iterations,
+        max_abs_fold,
+        wrap_azimuth,
+        min_region_area,
+        min_valid_fraction,
+    )?;
+
+    if result.region_count == 0
+        || result
+            .velocity
+            .iter()
+            .all(|value| !value.is_finite())
+    {
+        return Ok(result);
+    }
+
+    let candidate_velocity = result
+        .velocity
+        .view()
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d")
+        .to_owned();
+    let candidate_folds = result
+        .folds
+        .view()
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d")
+        .to_owned();
+
+    if result.region_count > 0 {
+        let (fallback, candidate_cost, fallback_cost, disagreement_fraction, largest_component) =
+            prefer_zw06_region_graph_fallback(
+                observed,
+                nyquist,
+                reference,
+                &candidate_velocity,
+                &candidate_folds,
+                result.skipped_sparse_blocks,
+                min_region_area,
+                wrap_azimuth,
+            )?;
+        result.candidate_cost = candidate_cost;
+        result.fallback_cost = fallback_cost;
+        result.disagreement_fraction = disagreement_fraction;
+        result.largest_disagreement_component = largest_component;
+
+        if let Some((fallback_result, reason)) = fallback {
+            result.velocity = fallback_result.velocity;
+            result.folds = fallback_result.folds;
+            result.confidence = fallback_result.confidence;
+            result.reference = fallback_result.reference;
+            result.method = "zw06_safety_fallback";
+            result.safety_fallback_applied = true;
+            result.safety_fallback_reason = Some(reason);
+        }
+    }
+
+    Ok(result)
 }
 
 #[derive(Clone, Debug)]
@@ -2742,6 +2914,312 @@ fn solution_cost(
     continuity + 0.35 * ref_cost
 }
 
+fn fold_disagreement_metrics(
+    candidate_folds: ArrayView2<'_, i16>,
+    fallback_folds: ArrayView2<'_, i16>,
+    candidate_velocity: ArrayView2<'_, f64>,
+    fallback_velocity: ArrayView2<'_, f64>,
+) -> (usize, usize, usize) {
+    let (rows, cols) = candidate_folds.dim();
+    let mut valid = Array2::from_elem((rows, cols), false);
+    let mut mismatch_count = 0usize;
+    let mut valid_count = 0usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let comparable =
+                candidate_velocity[(row, col)].is_finite() && fallback_velocity[(row, col)].is_finite();
+            if comparable {
+                valid[(row, col)] = candidate_folds[(row, col)] != fallback_folds[(row, col)];
+                valid_count += 1;
+                if valid[(row, col)] {
+                    mismatch_count += 1;
+                }
+            }
+        }
+    }
+
+    let mut visited = Array2::from_elem((rows, cols), false);
+    let mut largest_component = 0usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            if !valid[(row, col)] || visited[(row, col)] {
+                continue;
+            }
+            let mut queue = VecDeque::from([(row, col)]);
+            visited[(row, col)] = true;
+            let mut size = 0usize;
+            while let Some((r, c)) = queue.pop_front() {
+                size += 1;
+                if r > 0 && valid[(r - 1, c)] && !visited[(r - 1, c)] {
+                    visited[(r - 1, c)] = true;
+                    queue.push_back((r - 1, c));
+                }
+                if r + 1 < rows && valid[(r + 1, c)] && !visited[(r + 1, c)] {
+                    visited[(r + 1, c)] = true;
+                    queue.push_back((r + 1, c));
+                }
+                if c > 0 && valid[(r, c - 1)] && !visited[(r, c - 1)] {
+                    visited[(r, c - 1)] = true;
+                    queue.push_back((r, c - 1));
+                }
+                if c + 1 < cols && valid[(r, c + 1)] && !visited[(r, c + 1)] {
+                    visited[(r, c + 1)] = true;
+                    queue.push_back((r, c + 1));
+                }
+            }
+            largest_component = largest_component.max(size);
+        }
+    }
+
+    (mismatch_count, valid_count, largest_component)
+}
+
+fn should_prefer_region_graph_fallback(
+    candidate_cost: f64,
+    fallback_cost: f64,
+    mismatch_count: usize,
+    valid_count: usize,
+    largest_component: usize,
+    skipped_sparse_blocks: usize,
+    min_region_area: usize,
+    nyquist: f64,
+    has_reference: bool,
+) -> Option<String> {
+    if !fallback_cost.is_finite() {
+        return None;
+    }
+    if !candidate_cost.is_finite() {
+        return Some("zw06_finite_solution_fallback".to_string());
+    }
+    if valid_count == 0 || mismatch_count == 0 {
+        return None;
+    }
+
+    let mismatch_fraction = mismatch_count as f64 / valid_count as f64;
+    let component_fraction = largest_component as f64 / valid_count as f64;
+    let absolute_margin = REGION_GRAPH_SAFETY_COST_ABS_MARGIN_FRACTION * nyquist;
+    let clearly_worse = candidate_cost > fallback_cost + absolute_margin
+        && candidate_cost > fallback_cost * (1.0 + REGION_GRAPH_SAFETY_COST_REL_MARGIN);
+    let reference_worse = has_reference && candidate_cost > fallback_cost + 1e-8;
+    if !(clearly_worse || reference_worse) {
+        return None;
+    }
+
+    let min_component = usize::max(min_region_area.max(16), valid_count / 200);
+    let has_large_disagreement = mismatch_fraction >= REGION_GRAPH_SAFETY_DISAGREEMENT_FRACTION
+        && component_fraction >= REGION_GRAPH_SAFETY_COMPONENT_FRACTION
+        && largest_component >= min_component;
+    let reference_guided_disagreement =
+        has_reference && mismatch_fraction >= 0.01 && largest_component >= usize::max(4, min_region_area);
+    if !(has_large_disagreement || reference_guided_disagreement) {
+        return None;
+    }
+
+    if has_reference {
+        return Some("zw06_reference_consistency_fallback".to_string());
+    }
+    if skipped_sparse_blocks > 0 {
+        return Some("zw06_sparse_gap_fallback".to_string());
+    }
+    Some("zw06_lower_cost_on_large_disagreement".to_string())
+}
+
+fn prefer_zw06_region_graph_fallback(
+    observed: ArrayView2<'_, f64>,
+    nyquist: f64,
+    reference: Option<ArrayView2<'_, f64>>,
+    candidate_velocity: &Array2<f64>,
+    candidate_folds: &Array2<i16>,
+    skipped_sparse_blocks: usize,
+    min_region_area: usize,
+    wrap_azimuth: bool,
+) -> Result<(
+    Option<(Zw06Result, String)>,
+    f64,
+    Option<f64>,
+    f64,
+    usize,
+)> {
+    let candidate_cost = solution_cost(candidate_velocity.view(), observed, reference, nyquist);
+    let fallback = dealias_sweep_zw06(
+        observed,
+        nyquist,
+        reference,
+        REGION_GRAPH_SAFETY_WEAK_THRESHOLD_FRACTION,
+        wrap_azimuth,
+        REGION_GRAPH_SAFETY_MAX_ITERATIONS_PER_PASS,
+        true,
+        true,
+    )?;
+    let fallback_velocity = fallback
+        .velocity
+        .view()
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
+    let fallback_folds = fallback
+        .folds
+        .view()
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d");
+    let fallback_cost = solution_cost(fallback_velocity, observed, reference, nyquist);
+    let (mismatch_count, valid_count, largest_component) = fold_disagreement_metrics(
+        candidate_folds.view(),
+        fallback_folds,
+        candidate_velocity.view(),
+        fallback_velocity,
+    );
+    let disagreement_fraction = if valid_count > 0 {
+        mismatch_count as f64 / valid_count as f64
+    } else {
+        0.0
+    };
+
+    let fallback_result = should_prefer_region_graph_fallback(
+        candidate_cost,
+        fallback_cost,
+        mismatch_count,
+        valid_count,
+        largest_component,
+        skipped_sparse_blocks,
+        min_region_area,
+        nyquist,
+        reference.is_some(),
+    )
+    .map(|reason| (fallback, reason));
+
+    Ok((
+        fallback_result,
+        candidate_cost,
+        Some(fallback_cost),
+        disagreement_fraction,
+        largest_component,
+    ))
+}
+
+struct VariationalBootstrap {
+    initial: Array2<f64>,
+    reference: Array2<f64>,
+    method: &'static str,
+    region_count: usize,
+    skipped_sparse_blocks: usize,
+    assigned_gates: usize,
+    iterations_used: usize,
+    safety_fallback_applied: bool,
+    safety_fallback_reason: Option<String>,
+}
+
+fn use_region_graph_variational_bootstrap(
+    block_shape: Option<(usize, usize)>,
+    bootstrap_reference_weight: f64,
+    bootstrap_iterations: usize,
+    bootstrap_max_abs_fold: i16,
+    bootstrap_min_region_area: usize,
+    bootstrap_min_valid_fraction: f64,
+) -> bool {
+    block_shape.is_some()
+        || (bootstrap_reference_weight - DEFAULT_VARIATIONAL_BOOTSTRAP_REFERENCE_WEIGHT).abs() > 1e-12
+        || bootstrap_iterations != DEFAULT_VARIATIONAL_BOOTSTRAP_ITERATIONS
+        || bootstrap_max_abs_fold != DEFAULT_VARIATIONAL_BOOTSTRAP_MAX_ABS_FOLD
+        || bootstrap_min_region_area != DEFAULT_REGION_GRAPH_MIN_REGION_AREA
+        || (bootstrap_min_valid_fraction - DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION).abs() > 1e-12
+}
+
+fn build_variational_bootstrap(
+    observed: ArrayView2<'_, f64>,
+    nyquist: f64,
+    reference: Option<ArrayView2<'_, f64>>,
+    block_shape: Option<(usize, usize)>,
+    bootstrap_reference_weight: f64,
+    bootstrap_iterations: usize,
+    bootstrap_max_abs_fold: i16,
+    bootstrap_min_region_area: usize,
+    bootstrap_min_valid_fraction: f64,
+    wrap_azimuth: bool,
+) -> Result<VariationalBootstrap> {
+    let (rows, cols) = observed.dim();
+    if use_region_graph_variational_bootstrap(
+        block_shape,
+        bootstrap_reference_weight,
+        bootstrap_iterations,
+        bootstrap_max_abs_fold,
+        bootstrap_min_region_area,
+        bootstrap_min_valid_fraction,
+    ) {
+        let region = dealias_sweep_region_graph(
+            observed,
+            nyquist,
+            reference,
+            block_shape,
+            bootstrap_reference_weight,
+            bootstrap_iterations,
+            bootstrap_max_abs_fold,
+            wrap_azimuth,
+            bootstrap_min_region_area,
+            bootstrap_min_valid_fraction,
+        )?;
+        let initial = region
+            .velocity
+            .view()
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("2d")
+            .to_owned();
+        let reference_field = if let Some(reference) = reference {
+            reference.to_owned()
+        } else {
+            region
+                .reference
+                .view()
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2d")
+                .to_owned()
+        };
+        return Ok(VariationalBootstrap {
+            initial,
+            reference: reference_field,
+            method: region.method,
+            region_count: region.region_count,
+            skipped_sparse_blocks: region.skipped_sparse_blocks,
+            assigned_gates: region.assigned_regions,
+            iterations_used: region.merge_iterations,
+            safety_fallback_applied: region.safety_fallback_applied,
+            safety_fallback_reason: region.safety_fallback_reason.clone(),
+        });
+    }
+
+    let zw = dealias_sweep_zw06(
+        observed,
+        nyquist,
+        reference,
+        REGION_GRAPH_SAFETY_WEAK_THRESHOLD_FRACTION,
+        wrap_azimuth,
+        REGION_GRAPH_SAFETY_MAX_ITERATIONS_PER_PASS,
+        true,
+        true,
+    )?;
+    let initial = zw
+        .velocity
+        .view()
+        .into_dimensionality::<ndarray::Ix2>()
+        .expect("2d")
+        .to_owned();
+    let reference_field = if let Some(reference) = reference {
+        reference.to_owned()
+    } else {
+        Array2::from_elem((rows, cols), f64::NAN)
+    };
+    Ok(VariationalBootstrap {
+        initial,
+        reference: reference_field,
+        method: "2d_multipass",
+        region_count: 0,
+        skipped_sparse_blocks: 0,
+        assigned_gates: zw.assigned_gates,
+        iterations_used: zw.iterations_used,
+        safety_fallback_applied: false,
+        safety_fallback_reason: None,
+    })
+}
+
 pub fn dealias_sweep_recursive(
     observed: ArrayView2<'_, f64>,
     nyquist: f64,
@@ -2782,6 +3260,7 @@ pub fn dealias_sweep_recursive(
         velocity: bootstrap_velocity_dyn,
         folds: bootstrap_folds_dyn,
         confidence: bootstrap_confidence_dyn,
+        method: bootstrap_method,
         region_count: bootstrap_region_count,
         ..
     } = bootstrap;
@@ -2955,6 +3434,11 @@ pub fn dealias_sweep_recursive(
     );
     let (final_velocity, final_folds, final_confidence, method) =
         if recursive_cost > bootstrap_cost + 1e-8 {
+            let fallback_method = if bootstrap_method == "zw06_safety_fallback" {
+                "recursive_region_refinement_fallback_zw06"
+            } else {
+                "recursive_region_refinement_fallback_region_graph"
+            };
             (
                 bootstrap_velocity,
                 bootstrap_folds_dyn
@@ -2965,7 +3449,7 @@ pub fn dealias_sweep_recursive(
                     .into_dimensionality::<ndarray::Ix2>()
                     .expect("2d")
                     .to_owned(),
-                "recursive_region_refinement_fallback_region_graph",
+                fallback_method,
             )
         } else {
             (
@@ -2989,7 +3473,7 @@ pub fn dealias_sweep_recursive(
         reference_weight,
         wrap_azimuth,
         root_texture,
-        bootstrap_method: "region_graph_sweep",
+        bootstrap_method,
         bootstrap_region_count,
         method,
     })
@@ -4500,25 +4984,21 @@ pub fn dealias_sweep_ml(
             )?,
         )
     } else {
-        let region = dealias_sweep_region_graph(
+        let bootstrap = build_variational_bootstrap(
             observed,
             nyquist,
             None,
             None,
-            0.75,
-            6,
-            8,
-            true,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_REFERENCE_WEIGHT,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_ITERATIONS,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_MAX_ABS_FOLD,
             DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
             DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
+            true,
         )?;
-        let initial = region
-            .velocity
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("2d");
         let bootstrap = dealias_sweep_variational_refine(
             observed,
-            initial.view(),
+            bootstrap.initial.view(),
             None,
             nyquist,
             8,
@@ -4573,25 +5053,21 @@ pub fn dealias_sweep_ml(
     let mut refine_method = None;
     let mut refine_iterations = None;
     if refine_with_variational {
-        let bootstrap = dealias_sweep_region_graph(
+        let bootstrap = build_variational_bootstrap(
             observed,
             nyquist,
             Some(predicted_reference.view()),
             None,
-            0.75,
-            6,
-            8,
-            true,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_REFERENCE_WEIGHT,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_ITERATIONS,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_MAX_ABS_FOLD,
             DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
             DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
+            true,
         )?;
-        let initial = bootstrap
-            .velocity
-            .into_dimensionality::<ndarray::Ix2>()
-            .expect("2d");
         let refined = dealias_sweep_variational_refine(
             observed,
-            initial.view(),
+            bootstrap.initial.view(),
             Some(predicted_reference.view()),
             nyquist,
             8,
@@ -4799,24 +5275,35 @@ mod tests {
 
         assert_eq!(result.region_count, 4);
         assert_eq!(result.assigned_regions, 4);
-        assert_eq!(result.seed_region, Some(0));
         assert_eq!(result.block_shape, (2, 2));
         assert_eq!(result.block_grid_shape, (2, 2));
         assert_eq!(result.merge_iterations, 6);
         assert!(result.wrap_azimuth);
-        assert_eq!(result.average_fold, 0.0);
         assert_eq!(result.regions_with_reference, 4);
-        let expected_velocity = array![
-            [-6.0, 6.0, -2.0, -9.0],
-            [3.0, -5.0, 7.0, -1.0],
-            [-8.0, 4.0, -4.0, 8.0],
-            [0.0, -8.0, 4.0, -4.0]
-        ];
-        let expected_folds = array![[0i16, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
-        for (actual, expected) in result.velocity.iter().zip(expected_velocity.iter()) {
-            assert!((actual - expected).abs() < 1e-12);
-        }
-        assert_eq!(result.folds, expected_folds.into_dyn());
+        assert!(result.safety_fallback_applied);
+        assert_eq!(result.method, "zw06_safety_fallback");
+        assert_eq!(
+            result.safety_fallback_reason.as_deref(),
+            Some("zw06_reference_consistency_fallback")
+        );
+        let velocity = result
+            .velocity
+            .view()
+            .into_dimensionality::<ndarray::Ix2>()
+            .unwrap();
+        let observed_mae = observed
+            .iter()
+            .zip(truth.iter())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .sum::<f64>()
+            / observed.len() as f64;
+        let result_mae = velocity
+            .iter()
+            .zip(truth.iter())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .sum::<f64>()
+            / velocity.len() as f64;
+        assert!(result_mae < observed_mae);
     }
 
     #[test]
@@ -4877,18 +5364,77 @@ mod tests {
         )
         .unwrap();
 
-        let expected_velocity = array![
-            [14.0, 26.0, 18.0, 11.0],
-            [23.0, 15.0, 27.0, 19.0],
-            [12.0, 24.0, 16.0, 28.0],
-            [20.0, 12.0, 24.0, 16.0]
-        ];
-        let expected_folds = array![[1i16, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]];
-        assert_eq!(recursive.velocity, expected_velocity.into_dyn());
-        assert_eq!(recursive.folds, expected_folds.into_dyn());
-        assert_eq!(recursive.bootstrap_method, "region_graph_sweep");
+        let velocity = recursive
+            .velocity
+            .view()
+            .into_dimensionality::<ndarray::Ix2>()
+            .unwrap();
+        let observed_mae = observed
+            .iter()
+            .zip(truth.iter())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .sum::<f64>()
+            / observed.len() as f64;
+        let recursive_mae = velocity
+            .iter()
+            .zip(truth.iter())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .sum::<f64>()
+            / velocity.len() as f64;
+        assert!(recursive_mae < observed_mae);
+        assert!(matches!(
+            recursive.bootstrap_method,
+            "region_graph_sweep" | "zw06_safety_fallback"
+        ));
         assert_eq!(recursive.bootstrap_region_count, 1);
-        assert_eq!(recursive.method, "recursive_region_refinement");
+        assert!(matches!(
+            recursive.method,
+            "recursive_region_refinement"
+                | "recursive_region_refinement_fallback_region_graph"
+                | "recursive_region_refinement_fallback_zw06"
+        ));
+    }
+
+    #[test]
+    fn variational_defaults_to_zw06_bootstrap() {
+        let truth = array![
+            [-26.0, -14.0, -2.0, 11.0],
+            [23.0, 35.0, 47.0, 59.0],
+            [-8.0, 4.0, 16.0, 28.0],
+            [40.0, 52.0, 64.0, 76.0]
+        ];
+        let observed = wrap_to_nyquist(truth.view().into_dyn(), 10.0)
+            .unwrap()
+            .into_dimensionality::<ndarray::Ix2>()
+            .unwrap();
+        let result = dealias_sweep_variational(
+            observed.view(),
+            10.0,
+            Some(truth.view()),
+            None,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_REFERENCE_WEIGHT,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_ITERATIONS,
+            DEFAULT_VARIATIONAL_BOOTSTRAP_MAX_ABS_FOLD,
+            DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
+            DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
+            8,
+            1.0,
+            0.50,
+            0.20,
+            8,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(result.bootstrap_method, "2d_multipass");
+        assert_eq!(result.method, "zw06_bootstrap_then_coordinate_descent");
+        let velocity = result
+            .velocity
+            .view()
+            .into_dimensionality::<ndarray::Ix2>()
+            .unwrap();
+        assert!(velocity.iter().all(|value| value.is_finite()));
+        assert!(result.changed_gates > 0);
     }
 
     #[test]

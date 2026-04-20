@@ -63,11 +63,29 @@ pub struct VariationalResult {
     pub changed_gates: usize,
 }
 
+pub struct VariationalSweepResult {
+    pub velocity: ArrayD<f64>,
+    pub folds: ArrayD<i16>,
+    pub confidence: ArrayD<f64>,
+    pub reference: ArrayD<f64>,
+    pub method: &'static str,
+    pub bootstrap_method: &'static str,
+    pub bootstrap_region_count: usize,
+    pub bootstrap_skipped_sparse_blocks: usize,
+    pub bootstrap_assigned_gates: usize,
+    pub bootstrap_iterations_used: usize,
+    pub bootstrap_safety_fallback_applied: bool,
+    pub bootstrap_safety_fallback_reason: Option<String>,
+    pub iterations_used: usize,
+    pub changed_gates: usize,
+}
+
 pub struct RegionGraphResult {
     pub velocity: ArrayD<f64>,
     pub folds: ArrayD<i16>,
     pub confidence: ArrayD<f64>,
     pub reference: ArrayD<f64>,
+    pub method: &'static str,
     pub region_count: usize,
     pub assigned_regions: usize,
     pub seed_region: Option<usize>,
@@ -80,6 +98,12 @@ pub struct RegionGraphResult {
     pub min_region_area: usize,
     pub min_valid_fraction: f64,
     pub skipped_sparse_blocks: usize,
+    pub safety_fallback_applied: bool,
+    pub safety_fallback_reason: Option<String>,
+    pub candidate_cost: f64,
+    pub fallback_cost: Option<f64>,
+    pub disagreement_fraction: f64,
+    pub largest_disagreement_component: usize,
 }
 
 pub struct RecursiveResult {

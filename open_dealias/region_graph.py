@@ -17,6 +17,7 @@ from ._core import (
     texture_3x3,
     unfold_to_reference,
 )
+from .multipass import dealias_sweep_zw06
 from .result_state import attach_result_state_from_fields
 from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .types import DealiasResult
@@ -39,6 +40,7 @@ class _Region:
 _NATIVE_BACKEND = get_rust_backend()
 _DEFAULT_MIN_REGION_AREA = 4
 _DEFAULT_MIN_VALID_FRACTION = 0.15
+_DEFAULT_SAFETY_FALLBACK = True
 
 
 def _safe_nanmedian(data: np.ndarray) -> float:
@@ -54,6 +56,97 @@ def _wrap_delta(a: np.ndarray | float, b: np.ndarray | float, nyquist: float) ->
     arr_b = np.asarray(b, dtype=float)
     delta = ((arr_a - arr_b + nyquist) % (2.0 * nyquist)) - nyquist
     return np.where(np.isfinite(arr_a) & np.isfinite(arr_b), delta, np.nan)
+
+
+def _solution_cost(candidate: np.ndarray, observed: np.ndarray, reference: np.ndarray | None, nyquist: float) -> float:
+    continuity_terms: list[np.ndarray] = []
+    if candidate.shape[1] >= 2:
+        left = candidate[:, 1:]
+        right = candidate[:, :-1]
+        left_obs = observed[:, 1:]
+        right_obs = observed[:, :-1]
+        mask = np.isfinite(left) & np.isfinite(right) & np.isfinite(left_obs) & np.isfinite(right_obs)
+        if np.any(mask):
+            continuity_terms.append(np.abs(_wrap_delta(left[mask], right[mask], nyquist)))
+    if candidate.shape[0] >= 2:
+        upper = candidate[1:, :]
+        lower = candidate[:-1, :]
+        upper_obs = observed[1:, :]
+        lower_obs = observed[:-1, :]
+        mask = np.isfinite(upper) & np.isfinite(lower) & np.isfinite(upper_obs) & np.isfinite(lower_obs)
+        if np.any(mask):
+            continuity_terms.append(np.abs(_wrap_delta(upper[mask], lower[mask], nyquist)))
+    if not continuity_terms:
+        return float("inf")
+    continuity = float(np.mean(np.concatenate(continuity_terms)))
+    if reference is None:
+        return continuity
+    mask = np.isfinite(candidate) & np.isfinite(reference)
+    if not np.any(mask):
+        return continuity
+    ref_cost = float(np.mean(np.abs(candidate[mask] - reference[mask])))
+    return continuity + 0.35 * ref_cost
+
+
+def _maybe_apply_zw06_safety_fallback(
+    result: DealiasResult,
+    obs: np.ndarray,
+    nyquist: float,
+    ref: np.ndarray | None,
+    *,
+    wrap_azimuth: bool,
+    enabled: bool,
+) -> DealiasResult:
+    if not enabled or not np.any(np.isfinite(result.velocity)):
+        return result
+
+    zw06 = dealias_sweep_zw06(
+        obs,
+        nyquist,
+        reference=ref,
+        wrap_azimuth=wrap_azimuth,
+    )
+    region_cost = _solution_cost(np.asarray(result.velocity, dtype=float), obs, ref, nyquist)
+    zw06_cost = _solution_cost(np.asarray(zw06.velocity, dtype=float), obs, ref, nyquist)
+    valid = np.isfinite(result.velocity) & np.isfinite(zw06.velocity) & np.isfinite(obs)
+    fold_disagreement = float(np.mean(result.folds[valid] != zw06.folds[valid])) if np.any(valid) else 0.0
+
+    if not np.isfinite(zw06_cost):
+        return result
+    should_fallback = (
+        (not np.isfinite(region_cost))
+        or (zw06_cost + 0.10 < region_cost and zw06_cost <= 0.92 * region_cost)
+        or (zw06_cost + 0.25 < region_cost and fold_disagreement >= 0.02)
+    )
+    if not should_fallback:
+        return result
+
+    meta = dict(zw06.metadata)
+    meta.update(
+        {
+            "method": "region_graph_sweep_safety_fallback_zw06",
+            "paper_family": "PyARTRegionGraphLite+ZhangWang2006Fallback",
+            "fallback_from": result.metadata.get("method", "region_graph_sweep"),
+            "fallback_reason": "zw06_lower_solution_cost",
+            "fallback_region_graph_cost": region_cost,
+            "fallback_zw06_cost": zw06_cost,
+            "fallback_fold_disagreement_fraction": fold_disagreement,
+        }
+    )
+    return attach_result_state_from_fields(
+        DealiasResult(
+            velocity=np.asarray(zw06.velocity, dtype=float),
+            folds=np.asarray(zw06.folds, dtype=np.int16),
+            confidence=np.asarray(zw06.confidence, dtype=float),
+            reference=np.asarray(zw06.reference, dtype=float) if zw06.reference is not None else ref,
+            metadata=meta,
+        ),
+        obs,
+        source="region_graph_sweep_safety_fallback_zw06",
+        parent="PyARTRegionGraphLite+ZhangWang2006Fallback",
+        fill_policy=str(meta.get("fill_policy", "multipass_reference_then_cleanup")),
+        notes=("fallback_from=region_graph_sweep",),
+    )
 
 
 def _choose_block_shape(shape: tuple[int, int], block_shape: tuple[int, int] | None) -> tuple[int, int]:
@@ -392,6 +485,7 @@ def _python_dealias_sweep_region_graph(
     wrap_azimuth: bool = True,
     min_region_area: int = _DEFAULT_MIN_REGION_AREA,
     min_valid_fraction: float = _DEFAULT_MIN_VALID_FRACTION,
+    safety_fallback: bool = _DEFAULT_SAFETY_FALLBACK,
 ) -> DealiasResult:
     """Sweep-wide region graph solver inspired by Py-ART's dynamic network family.
 
@@ -506,18 +600,26 @@ def _python_dealias_sweep_region_graph(
         "min_valid_fraction": float(min_valid_fraction),
         "skipped_sparse_blocks": int(skipped_sparse_blocks),
     }
-    return attach_result_state_from_fields(
+    base = attach_result_state_from_fields(
         DealiasResult(
-        velocity=corrected,
-        folds=folds,
-        confidence=confidence,
-        reference=ref,
-        metadata=metadata,
+            velocity=corrected,
+            folds=folds,
+            confidence=confidence,
+            reference=ref,
+            metadata=metadata,
         ),
         obs,
         source="region_graph_sweep",
         parent="PyARTRegionGraphLite",
         fill_policy="region_graph_consensus_conservative",
+    )
+    return _maybe_apply_zw06_safety_fallback(
+        base,
+        obs,
+        nyquist,
+        ref,
+        wrap_azimuth=wrap_azimuth,
+        enabled=safety_fallback,
     )
 
 
@@ -533,6 +635,7 @@ def dealias_sweep_region_graph(
     wrap_azimuth: bool = True,
     min_region_area: int = _DEFAULT_MIN_REGION_AREA,
     min_valid_fraction: float = _DEFAULT_MIN_VALID_FRACTION,
+    safety_fallback: bool = _DEFAULT_SAFETY_FALLBACK,
 ) -> DealiasResult:
     """Sweep-wide region graph solver inspired by Py-ART's dynamic network family.
 
@@ -614,18 +717,26 @@ def dealias_sweep_region_graph(
         meta.setdefault("min_region_area", int(min_region_area))
         meta.setdefault("min_valid_fraction", float(min_valid_fraction))
         meta.setdefault("skipped_sparse_blocks", 0)
-        return attach_result_state_from_fields(
+        base = attach_result_state_from_fields(
             DealiasResult(
-            velocity=np.asarray(velocity, dtype=float),
-            folds=np.asarray(folds, dtype=np.int16),
-            confidence=np.asarray(confidence, dtype=float),
-            reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
-            metadata=meta,
+                velocity=np.asarray(velocity, dtype=float),
+                folds=np.asarray(folds, dtype=np.int16),
+                confidence=np.asarray(confidence, dtype=float),
+                reference=None if ref_out is None else np.asarray(ref_out, dtype=float),
+                metadata=meta,
             ),
             obs,
             source="region_graph_sweep",
             parent="PyARTRegionGraphLite",
             fill_policy=str(meta.get("fill_policy", "region_graph_consensus_conservative")),
+        )
+        return _maybe_apply_zw06_safety_fallback(
+            base,
+            obs,
+            nyquist,
+            ref,
+            wrap_azimuth=wrap_azimuth,
+            enabled=safety_fallback,
         )
 
     return _python_dealias_sweep_region_graph(
@@ -639,4 +750,5 @@ def dealias_sweep_region_graph(
         wrap_azimuth=wrap_azimuth,
         min_region_area=min_region_area,
         min_valid_fraction=min_valid_fraction,
+        safety_fallback=safety_fallback,
     )

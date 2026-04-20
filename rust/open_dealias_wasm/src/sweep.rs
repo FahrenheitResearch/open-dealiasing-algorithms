@@ -272,7 +272,7 @@ pub fn dealias_sweep_region_graph(
         cols,
         json!({
             "paper_family": "PyARTRegionGraphLite",
-            "method": "region_graph_sweep",
+            "method": result.method,
             "region_count": result.region_count,
             "assigned_regions": result.assigned_regions,
             "seed_region": result.seed_region,
@@ -285,6 +285,12 @@ pub fn dealias_sweep_region_graph(
             "min_region_area": result.min_region_area,
             "min_valid_fraction": result.min_valid_fraction,
             "skipped_sparse_blocks": result.skipped_sparse_blocks,
+            "safety_fallback_applied": result.safety_fallback_applied,
+            "safety_fallback_reason": result.safety_fallback_reason,
+            "candidate_cost": result.candidate_cost,
+            "fallback_cost": result.fallback_cost,
+            "disagreement_fraction": result.disagreement_fraction,
+            "largest_disagreement_component": result.largest_disagreement_component,
         }),
     ))
 }
@@ -331,7 +337,7 @@ pub fn dealias_sweep_region_graph_velocity(
         cols,
         json!({
             "paper_family": "PyARTRegionGraphLite",
-            "method": "region_graph_sweep",
+            "method": result.method,
             "region_count": result.region_count,
             "assigned_regions": result.assigned_regions,
             "seed_region": result.seed_region,
@@ -344,6 +350,12 @@ pub fn dealias_sweep_region_graph_velocity(
             "min_region_area": result.min_region_area,
             "min_valid_fraction": result.min_valid_fraction,
             "skipped_sparse_blocks": result.skipped_sparse_blocks,
+            "safety_fallback_applied": result.safety_fallback_applied,
+            "safety_fallback_reason": result.safety_fallback_reason,
+            "candidate_cost": result.candidate_cost,
+            "fallback_cost": result.fallback_cost,
+            "disagreement_fraction": result.disagreement_fraction,
+            "largest_disagreement_component": result.largest_disagreement_component,
             "output": "velocity_only",
         }),
     ))
@@ -478,7 +490,7 @@ pub fn dealias_sweep_variational(
         (None, None) => None,
         _ => return Err(JsValue::from_str("block_rows and block_cols must be provided together")),
     };
-    let bootstrap = open_dealias_core::dealias_sweep_region_graph(
+    let result = open_dealias_core::dealias_sweep_variational(
         observed_array.view(),
         nyquist,
         reference_array.as_ref().map(|value| value.view()),
@@ -486,23 +498,8 @@ pub fn dealias_sweep_variational(
         bootstrap_reference_weight,
         bootstrap_iterations,
         bootstrap_max_abs_fold,
-        wrap_azimuth,
         bootstrap_min_region_area,
         bootstrap_min_valid_fraction,
-    )
-    .map_err(js_error)?;
-    let initial = ndarray::ArrayD::from_shape_vec(
-        ndarray::IxDyn(&[rows, cols]),
-        array_to_vec_f64(bootstrap.velocity.clone()),
-    )
-    .expect("shape already validated")
-    .into_dimensionality::<ndarray::Ix2>()
-    .expect("shape already validated");
-    let refined = open_dealias_core::dealias_sweep_variational_refine(
-        observed_array.view(),
-        initial.view(),
-        reference_array.as_ref().map(|value| value.view()),
-        nyquist,
         max_abs_fold,
         neighbor_weight,
         reference_weight,
@@ -512,27 +509,26 @@ pub fn dealias_sweep_variational(
     )
     .map_err(js_error)?;
     Ok(result_2d(
-        refined.velocity,
-        refined.folds,
-        refined.confidence,
-        reference_array
-            .map(|value| value.into_dyn())
-            .unwrap_or_else(|| bootstrap.reference),
+        result.velocity,
+        result.folds,
+        result.confidence,
+        result.reference,
         rows,
         cols,
         json!({
             "paper_family": "VariationalLite",
-            "method": "region_graph_bootstrap_then_coordinate_descent",
+            "method": result.method,
             "bootstrap": {
-                "method": "region_graph_sweep",
-                "region_count": bootstrap.region_count,
-                "merge_iterations": bootstrap.merge_iterations,
-                "min_region_area": bootstrap.min_region_area,
-                "min_valid_fraction": bootstrap.min_valid_fraction,
-                "skipped_sparse_blocks": bootstrap.skipped_sparse_blocks,
+                "method": result.bootstrap_method,
+                "region_count": result.bootstrap_region_count,
+                "skipped_sparse_blocks": result.bootstrap_skipped_sparse_blocks,
+                "assigned_gates": result.bootstrap_assigned_gates,
+                "iterations_used": result.bootstrap_iterations_used,
+                "safety_fallback_applied": result.bootstrap_safety_fallback_applied,
+                "safety_fallback_reason": result.bootstrap_safety_fallback_reason,
             },
-            "iterations_used": refined.iterations_used,
-            "changed_gates": refined.changed_gates,
+            "iterations_used": result.iterations_used,
+            "changed_gates": result.changed_gates,
             "max_abs_fold": max_abs_fold,
             "wrap_azimuth": wrap_azimuth,
         }),
@@ -564,31 +560,16 @@ pub fn dealias_sweep_variational_velocity(
         (None, None) => None,
         _ => return Err(JsValue::from_str("block_rows and block_cols must be provided together")),
     };
-    let bootstrap = open_dealias_core::dealias_sweep_region_graph(
+    let result = open_dealias_core::dealias_sweep_variational(
         observed_array.view(),
         nyquist,
         reference_array.as_ref().map(|value| value.view()),
         block_shape,
-        reference_weight,
-        max_iterations,
-        max_abs_fold,
-        wrap_azimuth,
+        0.75,
+        6,
+        8,
         bootstrap_min_region_area,
         bootstrap_min_valid_fraction,
-    )
-    .map_err(js_error)?;
-    let initial = ndarray::ArrayD::from_shape_vec(
-        ndarray::IxDyn(&[rows, cols]),
-        array_to_vec_f64(bootstrap.velocity.clone()),
-    )
-    .expect("shape already validated")
-    .into_dimensionality::<ndarray::Ix2>()
-    .expect("shape already validated");
-    let result = open_dealias_core::dealias_sweep_variational_refine(
-        observed_array.view(),
-        initial.view(),
-        reference_array.as_ref().map(|value| value.view()),
-        nyquist,
         max_abs_fold,
         neighbor_weight,
         reference_weight,
@@ -603,7 +584,7 @@ pub fn dealias_sweep_variational_velocity(
         cols,
         json!({
             "paper_family": "VariationalLite",
-            "method": "region_graph_bootstrap_then_coordinate_descent",
+            "method": result.method,
             "iterations_used": result.iterations_used,
             "changed_gates": result.changed_gates,
             "max_abs_fold": max_abs_fold,
@@ -611,8 +592,13 @@ pub fn dealias_sweep_variational_velocity(
             "reference_weight": reference_weight,
             "smoothness_weight": smoothness_weight,
             "wrap_azimuth": wrap_azimuth,
-            "bootstrap_method": "region_graph_sweep",
-            "bootstrap_region_count": bootstrap.region_count,
+            "bootstrap_method": result.bootstrap_method,
+            "bootstrap_region_count": result.bootstrap_region_count,
+            "bootstrap_skipped_sparse_blocks": result.bootstrap_skipped_sparse_blocks,
+            "bootstrap_assigned_gates": result.bootstrap_assigned_gates,
+            "bootstrap_iterations_used": result.bootstrap_iterations_used,
+            "bootstrap_safety_fallback_applied": result.bootstrap_safety_fallback_applied,
+            "bootstrap_safety_fallback_reason": result.bootstrap_safety_fallback_reason,
             "output": "velocity_only",
         }),
     ))

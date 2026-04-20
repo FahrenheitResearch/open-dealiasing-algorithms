@@ -5,11 +5,43 @@ import numpy as np
 from open_dealias import build_reference_from_uv, unfold_to_reference, wrap_to_nyquist
 from open_dealias.region_graph import dealias_sweep_region_graph
 from open_dealias.recursive import dealias_sweep_recursive
+from open_dealias.variational import dealias_sweep_variational
+from open_dealias.variational import dealias_sweep_variational
 
 
 def mae(a: np.ndarray, b: np.ndarray) -> float:
     mask = np.isfinite(a) & np.isfinite(b)
     return float(np.mean(np.abs(a[mask] - b[mask])))
+
+
+def _build_missing_wedge_case() -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[slice, slice]]:
+    az = np.linspace(0.0, 360.0, 144, endpoint=False)
+    rg = np.linspace(0.0, 1.0, 128)[None, :]
+    azr = np.deg2rad(az)[:, None]
+
+    background = build_reference_from_uv(az, 128, u=8.5, v=-1.5)
+    truth = background + 24.0 * rg + 4.0 * np.sin(3.0 * azr)
+    truth += 8.0 * np.exp(-((rg - 0.72) ** 2) / 0.006) * np.sin(azr - 1.1)
+    truth = truth.copy()
+    truth[24:62, 64:110] += 20.0
+    truth[34:78, 82:118] = np.nan
+
+    observed = wrap_to_nyquist(truth, 10.0)
+    sector = (slice(20, 66), slice(60, 112))
+    return truth, observed, truth.copy(), sector
+
+
+def _sector_sign_mismatch_count(
+    truth: np.ndarray,
+    candidate: np.ndarray,
+    sector: tuple[slice, slice],
+) -> int:
+    truth_sector = truth[sector]
+    candidate_sector = candidate[sector]
+    mask = np.isfinite(truth_sector) & np.isfinite(candidate_sector)
+    if not np.any(mask):
+        return 0
+    return int(np.count_nonzero(np.signbit(truth_sector[mask]) != np.signbit(candidate_sector[mask])))
 
 
 def test_region_graph_recovers_fold_progression_better_than_coarse_reference():
@@ -66,3 +98,52 @@ def test_region_graph_skips_sparse_blocks_and_leaves_them_unresolved():
     assert result.metadata["min_region_area"] == 4
     assert result.metadata["min_valid_fraction"] == 0.15
     assert not np.any(np.isfinite(result.velocity))
+
+
+def test_region_graph_missing_wedge_stays_conservative_without_opposite_sign_sector():
+    truth, obs, reference, sector = _build_missing_wedge_case()
+
+    result = dealias_sweep_region_graph(
+        obs,
+        10.0,
+        reference=reference,
+        block_shape=(8, 8),
+        min_region_area=8,
+        min_valid_fraction=0.30,
+    )
+
+    overlap = np.isfinite(truth) & np.isfinite(result.velocity)
+    assert np.any(overlap)
+    assert _sector_sign_mismatch_count(truth, result.velocity, sector) == 0
+    assert result.metadata["skipped_sparse_blocks"] >= 1
+    assert result.result_state.unresolved_gates > 0
+    assert mae(result.velocity[overlap], truth[overlap]) < 1.5
+
+
+def test_variational_missing_wedge_bootstrap_does_not_create_opposite_sign_sector():
+    truth, obs, reference, sector = _build_missing_wedge_case()
+
+    region_graph = dealias_sweep_region_graph(
+        obs,
+        10.0,
+        reference=reference,
+        block_shape=(8, 8),
+        min_region_area=8,
+        min_valid_fraction=0.30,
+    )
+    variational = dealias_sweep_variational(obs, 10.0, reference=reference, max_iterations=6)
+
+    assert variational.metadata["bootstrap_method"] == "2d_multipass"
+    assert _sector_sign_mismatch_count(truth, variational.velocity, sector) == 0
+    assert variational.result_state.unresolved_gates <= region_graph.result_state.unresolved_gates
+
+
+
+def test_variational_defaults_to_zw06_bootstrap():
+    az = np.linspace(0.0, 360.0, 120, endpoint=False)
+    truth = build_reference_from_uv(az, 64, u=14.0, v=-3.0)
+    obs = wrap_to_nyquist(truth, 10.0)
+
+    result = dealias_sweep_variational(obs, 10.0)
+
+    assert result.metadata["bootstrap_method"] in {"2d_multipass", "zw06"}

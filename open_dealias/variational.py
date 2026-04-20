@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 
 from ._core import as_float_array, fold_counts, gaussian_confidence, neighbor_stack, unfold_to_reference
+from .multipass import dealias_sweep_zw06
 from .result_state import attach_result_state_from_fields
 from ._rust_bridge import get_rust_backend, resolve_rust_backend
 from .region_graph import dealias_sweep_region_graph
@@ -22,6 +23,21 @@ def _safe_nanmean(arr: np.ndarray, axis: int = 0) -> np.ndarray:
             return np.nanmean(arr, axis=axis)
 
 
+def _bootstrap_variational(
+    obs: np.ndarray,
+    nyquist: float,
+    *,
+    reference: np.ndarray | None,
+    wrap_azimuth: bool,
+    bootstrap_method: str,
+) -> DealiasResult:
+    if bootstrap_method == "zw06":
+        return dealias_sweep_zw06(obs, nyquist, reference=reference, wrap_azimuth=wrap_azimuth)
+    if bootstrap_method == "region_graph":
+        return dealias_sweep_region_graph(obs, nyquist, reference=reference, wrap_azimuth=wrap_azimuth)
+    raise ValueError("bootstrap_method must be 'zw06' or 'region_graph'")
+
+
 def dealias_sweep_variational(
     observed: np.ndarray,
     nyquist: float,
@@ -33,6 +49,7 @@ def dealias_sweep_variational(
     smoothness_weight: float = 0.20,
     max_iterations: int = 8,
     wrap_azimuth: bool = True,
+    bootstrap_method: str = "zw06",
 ) -> DealiasResult:
     """Global-ish coordinate-descent solver over integer fold offsets.
 
@@ -66,7 +83,13 @@ def dealias_sweep_variational(
             parent="VariationalLite",
         )
 
-    bootstrap = dealias_sweep_region_graph(obs, nyquist, reference=ref, wrap_azimuth=wrap_azimuth)
+    bootstrap = _bootstrap_variational(
+        obs,
+        nyquist,
+        reference=ref,
+        wrap_azimuth=wrap_azimuth,
+        bootstrap_method=bootstrap_method,
+    )
     if ref is not None:
         corrected = np.where(np.isfinite(bootstrap.velocity), bootstrap.velocity, unfold_to_reference(obs, ref, nyquist))
     else:
@@ -88,7 +111,7 @@ def dealias_sweep_variational(
             bool(wrap_azimuth),
         )
         meta = dict(metadata)
-        meta["bootstrap_method"] = bootstrap.metadata.get("method")
+        meta["bootstrap_method"] = bootstrap.metadata.get("method", bootstrap_method)
         return attach_result_state_from_fields(
             DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
@@ -100,7 +123,7 @@ def dealias_sweep_variational(
             obs,
             source=str(meta.get("method", "coordinate_descent")),
             parent=str(meta.get("paper_family", "VariationalLite")),
-            notes=(f"bootstrap_method={bootstrap.metadata.get('method')}",),
+            notes=(f"bootstrap_method={bootstrap.metadata.get('method', bootstrap_method)}",),
         )
 
     folds = fold_counts(corrected, obs, nyquist).astype(int)
@@ -167,11 +190,11 @@ def dealias_sweep_variational(
             "changed_gates": int(changed_total),
             "max_abs_fold": int(max_abs_fold),
             "wrap_azimuth": bool(wrap_azimuth),
-            "bootstrap_method": bootstrap.metadata.get("method"),
+            "bootstrap_method": bootstrap.metadata.get("method", bootstrap_method),
         },
         ),
         obs,
         source="coordinate_descent",
         parent="VariationalLite",
-        notes=(f"bootstrap_method={bootstrap.metadata.get('method')}",),
+        notes=(f"bootstrap_method={bootstrap.metadata.get('method', bootstrap_method)}",),
     )

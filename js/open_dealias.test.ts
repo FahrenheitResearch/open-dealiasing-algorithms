@@ -10,15 +10,19 @@ import {
   dealiasSweepJH01VelocityPacked,
   dealiasSweepRegionGraphPacked,
   dealiasSweepRegionGraphVelocityPacked,
+  dealiasSweepVariationalPacked,
+  dealiasSweepVariationalVelocityPacked,
   dealiasSweepZW06,
   dealiasSweepZW06Packed,
   initOpenDealiasWasm,
   packSweep,
   resetOpenDealiasBackend,
+  setOpenDealiasBackend,
   sanitizePackedSweep,
   unpackSweep,
   wrapToNyquist,
 } from "./open_dealias.js";
+import { createOpenDealiasBackendFromModule } from "./open_dealias_wasm.js";
 
 test("wrapToNyquist keeps values inside interval", () => {
   assert.equal(wrapToNyquist(27, 10), 7);
@@ -172,6 +176,95 @@ test("initOpenDealiasWasm accepts a module-style backend factory", async () => {
   assert.deepEqual(Array.from(result.velocity), [6, 7, 8, 9]);
 
   resetOpenDealiasBackend();
+});
+
+test("WASM variational backend defaults to safer ZW06 bootstrap", () => {
+  const calls: string[] = [];
+  const fakeModule = {
+    dealiasSweepZw06Velocity(_observed: Float64Array, rows: number, cols: number) {
+      calls.push("zw06");
+      return {
+        velocity: Float32Array.from({ length: rows * cols }, (_, index) => index + 10),
+        rows,
+        cols,
+        metadata_json: JSON.stringify({ method: "zw06" }),
+        free() {},
+      };
+    },
+    dealiasSweepVariationalRefine(_observed: Float64Array, rows: number, cols: number, initialCorrected: Float64Array) {
+      calls.push("refine");
+      assert.deepEqual(Array.from(initialCorrected), [10, 11, 12, 13]);
+      return {
+        velocity: Float64Array.from(initialCorrected, (value) => value + 1),
+        folds: new Int16Array(rows * cols),
+        confidence: Float32Array.from({ length: rows * cols }, () => 1),
+        rows,
+        cols,
+        metadata_json: JSON.stringify({ method: "variational_refine" }),
+        free() {},
+      };
+    },
+    dealiasSweepVariational() {
+      calls.push("direct");
+      return {
+        velocity: new Float64Array([99, 99, 99, 99]),
+        folds: new Int16Array(4),
+        confidence: Float32Array.from({ length: 4 }, () => 1),
+        rows: 2,
+        cols: 2,
+        metadata_json: JSON.stringify({ method: "variational_direct" }),
+        free() {},
+      };
+    },
+  };
+
+  setOpenDealiasBackend(createOpenDealiasBackendFromModule(fakeModule));
+  try {
+    const result = dealiasSweepVariationalPacked([[1, 2], [3, 4]], 10);
+    assert.deepEqual(calls, ["zw06", "refine"]);
+    assert.deepEqual(Array.from(result.velocity), [11, 12, 13, 14]);
+    assert.equal(result.metadata.method, "variational_refine");
+    assert.equal(result.metadata.bootstrap_method, "zw06");
+  } finally {
+    resetOpenDealiasBackend();
+  }
+});
+
+test("WASM variational backend still supports explicit region-graph bootstrap", () => {
+  const calls: string[] = [];
+  const fakeModule = {
+    dealiasSweepVariationalVelocity(_observed: Float64Array, rows: number, cols: number) {
+      calls.push("direct");
+      return {
+        velocity: new Float32Array([21, 22, 23, 24]),
+        rows,
+        cols,
+        metadata_json: JSON.stringify({ method: "variational_direct" }),
+        free() {},
+      };
+    },
+    dealiasSweepZw06Velocity() {
+      calls.push("zw06");
+      throw new Error("unexpected zw06 bootstrap");
+    },
+    dealiasSweepVariationalRefine() {
+      calls.push("refine");
+      throw new Error("unexpected refine path");
+    },
+  };
+
+  setOpenDealiasBackend(createOpenDealiasBackendFromModule(fakeModule));
+  try {
+    const result = dealiasSweepVariationalVelocityPacked([[1, 2], [3, 4]], 10, {
+      bootstrapMethod: "region_graph",
+    });
+    assert.deepEqual(calls, ["direct"]);
+    assert.deepEqual(Array.from(result.velocity), [21, 22, 23, 24]);
+    assert.equal(result.metadata.method, "variational_direct");
+    assert.equal(result.metadata.bootstrap_method, "region_graph");
+  } finally {
+    resetOpenDealiasBackend();
+  }
 });
 
 test("dealiasDualPrfPacked resolves a folded paired field", () => {

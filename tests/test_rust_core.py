@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from open_dealias import build_reference_from_uv
 import open_dealias.continuity as continuity_module
 import open_dealias._core as core_module
 import open_dealias.multipass as multipass_module
@@ -27,7 +28,7 @@ from open_dealias._core import (
     unfold_to_reference,
     wrap_to_nyquist,
 )
-from open_dealias._rust_bridge import get_rust_backend
+from open_dealias._rust_bridge import backend_policy, get_rust_backend
 from open_dealias.continuity import dealias_radial_es90, dealias_sweep_es90
 from open_dealias.dual_prf import _python_dealias_dual_prf, dealias_dual_prf
 from open_dealias.multipass import dealias_sweep_zw06
@@ -40,6 +41,36 @@ from examples.region_variational_migration_benchmark import _default_archive_pat
 
 backend = get_rust_backend()
 pytestmark = pytest.mark.skipif(backend is None, reason="Rust backend not built")
+
+
+def _build_missing_wedge_case() -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[slice, slice]]:
+    az = np.linspace(0.0, 360.0, 144, endpoint=False)
+    rg = np.linspace(0.0, 1.0, 128)[None, :]
+    azr = np.deg2rad(az)[:, None]
+
+    background = build_reference_from_uv(az, 128, u=8.5, v=-1.5)
+    truth = background + 24.0 * rg + 4.0 * np.sin(3.0 * azr)
+    truth += 8.0 * np.exp(-((rg - 0.72) ** 2) / 0.006) * np.sin(azr - 1.1)
+    truth = truth.copy()
+    truth[24:62, 64:110] += 20.0
+    truth[34:78, 82:118] = np.nan
+
+    observed = wrap_to_nyquist(truth, 10.0)
+    sector = (slice(20, 66), slice(60, 112))
+    return truth, observed, truth.copy(), sector
+
+
+def _sector_sign_mismatch_count(
+    truth: np.ndarray,
+    candidate: np.ndarray,
+    sector: tuple[slice, slice],
+) -> int:
+    truth_sector = truth[sector]
+    candidate_sector = candidate[sector]
+    mask = np.isfinite(truth_sector) & np.isfinite(candidate_sector)
+    if not np.any(mask):
+        return 0
+    return int(np.count_nonzero(np.signbit(truth_sector[mask]) != np.signbit(candidate_sector[mask])))
 
 
 def test_wrap_to_nyquist_matches_python_semantics() -> None:
@@ -295,6 +326,63 @@ def test_variational_matches_python_fallback(monkeypatch: pytest.MonkeyPatch) ->
     np.testing.assert_array_equal(public.folds, expected.folds)
     np.testing.assert_allclose(public.confidence, expected.confidence, equal_nan=True)
     assert public.metadata["iterations_used"] == expected.metadata["iterations_used"]
+    assert public.metadata["bootstrap_method"] == expected.metadata["bootstrap_method"] == "2d_multipass"
+
+
+def test_region_graph_matches_python_fallback_on_missing_wedge_case() -> None:
+    truth, observed, reference, sector = _build_missing_wedge_case()
+
+    with backend_policy("python"):
+        expected = region_graph_module.dealias_sweep_region_graph(
+            observed,
+            10.0,
+            reference=reference,
+            block_shape=(8, 8),
+            min_region_area=8,
+            min_valid_fraction=0.30,
+        )
+
+    public = region_graph_module.dealias_sweep_region_graph(
+        observed,
+        10.0,
+        reference=reference,
+        block_shape=(8, 8),
+        min_region_area=8,
+        min_valid_fraction=0.30,
+    )
+
+    np.testing.assert_allclose(public.velocity, expected.velocity, equal_nan=True)
+    np.testing.assert_array_equal(public.folds, expected.folds)
+    np.testing.assert_allclose(public.confidence, expected.confidence, equal_nan=True, atol=0.15)
+    assert public.metadata["skipped_sparse_blocks"] == expected.metadata["skipped_sparse_blocks"]
+    assert public.metadata["min_region_area"] == 8
+    assert public.metadata["min_valid_fraction"] == pytest.approx(0.30)
+    assert _sector_sign_mismatch_count(truth, public.velocity, sector) == 0
+
+
+def test_variational_matches_python_fallback_on_missing_wedge_case() -> None:
+    truth, observed, reference, sector = _build_missing_wedge_case()
+
+    with backend_policy("python"):
+        expected = variational_module.dealias_sweep_variational(
+            observed,
+            10.0,
+            reference=reference,
+            max_iterations=6,
+        )
+
+    public = dealias_sweep_variational(
+        observed,
+        10.0,
+        reference=reference,
+        max_iterations=6,
+    )
+
+    np.testing.assert_allclose(public.velocity, expected.velocity, equal_nan=True)
+    np.testing.assert_array_equal(public.folds, expected.folds)
+    np.testing.assert_allclose(public.confidence, expected.confidence, equal_nan=True)
+    assert public.metadata["bootstrap_method"] == expected.metadata["bootstrap_method"] == "2d_multipass"
+    assert _sector_sign_mismatch_count(truth, public.velocity, sector) == 0
 
 
 def test_volume3d_dispatches_to_native_backend_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -439,6 +527,94 @@ def test_region_graph_dispatches_to_native_backend_when_available(monkeypatch: p
     assert public.metadata["method"] == "region_graph_sweep"
     assert public.metadata["paper_family"] == "PyARTRegionGraphLite"
     assert public.metadata["block_shape"] == [2, 2]
+
+
+def test_region_graph_dispatches_conservative_args_to_native_backend_when_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = np.array(
+        [
+            [-6.0, -5.0, 4.0, 5.0],
+            [-7.0, -6.0, 5.0, 6.0],
+            [np.nan, -7.0, 6.0, 7.0],
+            [-8.0, -7.0, 7.0, 8.0],
+        ],
+        dtype=float,
+    )
+    reference = np.array(
+        [
+            [14.0, 15.0, 24.0, 25.0],
+            [13.0, 14.0, 25.0, 26.0],
+            [np.nan, 13.0, 26.0, 27.0],
+            [12.0, 13.0, 27.0, 28.0],
+        ],
+        dtype=float,
+    )
+
+    expected = region_graph_module._python_dealias_sweep_region_graph(
+        observed,
+        10.0,
+        reference=reference,
+        block_shape=(2, 2),
+        reference_weight=0.70,
+        max_iterations=4,
+        max_abs_fold=6,
+        wrap_azimuth=True,
+        min_region_area=5,
+        min_valid_fraction=0.35,
+    )
+
+    class FakeRegionGraphBackend:
+        def dealias_sweep_region_graph(
+            self,
+            obs,
+            nyquist,
+            ref,
+            block_shape,
+            reference_weight,
+            max_iterations,
+            max_abs_fold,
+            wrap_azimuth,
+            min_region_area,
+            min_valid_fraction,
+        ):
+            np.testing.assert_allclose(obs, observed, equal_nan=True)
+            assert nyquist == 10.0
+            assert block_shape == (2, 2)
+            assert reference_weight == pytest.approx(0.70)
+            assert max_iterations == 4
+            assert max_abs_fold == 6
+            assert wrap_azimuth is True
+            assert min_region_area == 5
+            assert min_valid_fraction == pytest.approx(0.35)
+            np.testing.assert_allclose(ref, reference, equal_nan=True)
+            return (
+                expected.velocity,
+                expected.folds,
+                expected.confidence,
+                expected.reference,
+                {"backend": "fake_region_graph", "method": "region_graph_sweep"},
+            )
+
+    monkeypatch.setattr(region_graph_module, "_NATIVE_BACKEND", FakeRegionGraphBackend())
+    public = region_graph_module.dealias_sweep_region_graph(
+        observed,
+        10.0,
+        reference=reference,
+        block_shape=(2, 2),
+        reference_weight=0.70,
+        max_iterations=4,
+        max_abs_fold=6,
+        wrap_azimuth=True,
+        min_region_area=5,
+        min_valid_fraction=0.35,
+    )
+
+    np.testing.assert_allclose(public.velocity, expected.velocity, equal_nan=True)
+    np.testing.assert_array_equal(public.folds, expected.folds)
+    np.testing.assert_allclose(public.confidence, expected.confidence, equal_nan=True)
+    assert public.metadata["min_region_area"] == 5
+    assert public.metadata["min_valid_fraction"] == pytest.approx(0.35)
 
 
 def test_region_graph_benchmark_hook_records_real_like_case_if_archive_present():
