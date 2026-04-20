@@ -15,6 +15,7 @@ import {
   initOpenDealiasWasm,
   packSweep,
   resetOpenDealiasBackend,
+  sanitizePackedSweep,
   unpackSweep,
   wrapToNyquist,
 } from "./open_dealias.js";
@@ -85,6 +86,33 @@ test("packSweep reuses already-packed typed arrays", () => {
   };
   const repacked = packSweep(packed);
   assert.equal(repacked.data, packed.data);
+});
+
+test("packSweep can normalize finite no-data sentinels to NaN", () => {
+  const packed = packSweep(
+    [
+      [0, -9999, 2],
+      [3, 4, 0],
+    ],
+    { zeroIsMissing: true, noDataValues: [-9999] },
+  );
+  assert.ok(Number.isNaN(packed.data[0]));
+  assert.ok(Number.isNaN(packed.data[1]));
+  assert.equal(packed.data[2], 2);
+  assert.ok(Number.isNaN(packed.data[5]));
+});
+
+test("sanitizePackedSweep normalizes already-packed sentinel values", () => {
+  const observed = {
+    data: new Float64Array([0, -9999, 2, 3]),
+    azimuthCount: 2,
+    gateCount: 2,
+  };
+  const sanitized = sanitizePackedSweep(observed, { zeroIsMissing: true, noDataValue: -9999 });
+  assert.notEqual(sanitized.data, observed.data);
+  assert.ok(Number.isNaN(sanitized.data[0]));
+  assert.ok(Number.isNaN(sanitized.data[1]));
+  assert.equal(sanitized.data[2], 2);
 });
 
 test("dealiasSweepZW06Packed returns flat typed arrays", () => {

@@ -1303,6 +1303,9 @@ fn choose_block_shape(
     (br, bc)
 }
 
+const DEFAULT_REGION_GRAPH_MIN_REGION_AREA: usize = 4;
+const DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION: f64 = 0.15;
+
 #[derive(Clone, Debug)]
 struct RegionGraphRegion {
     region_id: usize,
@@ -1371,7 +1374,9 @@ fn build_region_graph(
     reference: Option<ArrayView2<'_, f64>>,
     block_shape: Option<(usize, usize)>,
     wrap_azimuth: bool,
-) -> Result<(Vec<RegionGraphRegion>, Array2<isize>)> {
+    min_region_area: usize,
+    min_valid_fraction: f64,
+) -> Result<(Vec<RegionGraphRegion>, Array2<isize>, usize)> {
     let (rows, cols) = observed.dim();
     let (block_rows, block_cols) = choose_block_shape((rows, cols), block_shape);
     let texture_map = texture_3x3(observed, wrap_azimuth)?;
@@ -1380,15 +1385,23 @@ fn build_region_graph(
     let n_col_blocks = usize::max(1, (cols + block_cols - 1) / block_cols);
     let mut block_ids = Array2::from_elem((n_row_blocks, n_col_blocks), -1isize);
     let mut regions: Vec<RegionGraphRegion> = Vec::new();
+    let mut skipped_sparse_blocks = 0usize;
 
     for bi in 0..n_row_blocks {
         let r0 = bi * block_rows;
-        let r1 = usize::min(rows, r0 + block_rows);
+            let r1 = usize::min(rows, r0 + block_rows);
         for bj in 0..n_col_blocks {
             let c0 = bj * block_cols;
             let c1 = usize::min(cols, c0 + block_cols);
             let block = observed.slice(ndarray::s![r0..r1, c0..c1]);
-            if !block.iter().any(|value| value.is_finite()) {
+            let finite_count = block.iter().filter(|value| value.is_finite()).count();
+            if finite_count == 0 {
+                continue;
+            }
+            let total_cells = (r1 - r0) * (c1 - c0);
+            let valid_fraction = finite_count as f64 / total_cells as f64;
+            if finite_count < min_region_area || valid_fraction < min_valid_fraction {
+                skipped_sparse_blocks += 1;
                 continue;
             }
 
@@ -1408,7 +1421,7 @@ fn build_region_graph(
                 col1: c1,
                 mean_obs,
                 texture,
-                area: block.iter().filter(|value| value.is_finite()).count(),
+                area: finite_count,
                 neighbors: Vec::new(),
                 boundary_weight: HashMap::new(),
             });
@@ -1474,7 +1487,7 @@ fn build_region_graph(
         }
     }
 
-    Ok((regions, block_ids))
+    Ok((regions, block_ids, skipped_sparse_blocks))
 }
 
 fn pick_seed_region(
@@ -1707,6 +1720,7 @@ fn expand_region_solution(
     let (rows, cols) = observed.dim();
     let mut coarse = Array2::from_elem((rows, cols), f64::NAN);
     let mut confidence = Array2::from_elem((rows, cols), 0.0f64);
+    let mut covered = Array2::from_elem((rows, cols), false);
 
     for region in regions {
         let corrected_mean = *mean_map.get(&region.region_id).unwrap();
@@ -1714,6 +1728,7 @@ fn expand_region_solution(
         for row in region.row0..region.row1 {
             for col in region.col0..region.col1 {
                 coarse[(row, col)] = corrected_mean;
+                covered[(row, col)] = true;
             }
         }
         let scale = f64::max(0.30 * nyquist, 1.0 + 0.12 * region.texture);
@@ -1776,8 +1791,9 @@ fn expand_region_solution(
     let mut corrected = corrected.into_dimensionality::<ndarray::Ix2>().expect("2d");
     for row in 0..rows {
         for col in 0..cols {
-            if !observed[(row, col)].is_finite() {
+            if !observed[(row, col)].is_finite() || !covered[(row, col)] {
                 corrected[(row, col)] = f64::NAN;
+                confidence[(row, col)] = 0.0;
             }
         }
     }
@@ -1804,10 +1820,17 @@ pub fn dealias_sweep_region_graph(
     max_iterations: usize,
     max_abs_fold: i16,
     wrap_azimuth: bool,
+    min_region_area: usize,
+    min_valid_fraction: f64,
 ) -> Result<RegionGraphResult> {
     validate_nyquist(nyquist)?;
     if max_abs_fold < 0 {
         return Err(DealiasError::InvalidMaxAbsFold(max_abs_fold));
+    }
+    if !(0.0..=1.0).contains(&min_valid_fraction) {
+        return Err(DealiasError::ShapeMismatch(
+            "min_valid_fraction must be between 0 and 1",
+        ));
     }
     if let Some(reference) = reference {
         if reference.dim() != observed.dim() {
@@ -1842,10 +1865,48 @@ pub fn dealias_sweep_region_graph(
             average_fold: 0.0,
             regions_with_reference: 0,
             block_grid_shape: (0, 0),
+            min_region_area,
+            min_valid_fraction,
+            skipped_sparse_blocks: 0,
         });
     }
 
-    let (regions, block_ids) = build_region_graph(observed, reference, block_shape, wrap_azimuth)?;
+    let (regions, block_ids, skipped_sparse_blocks) = build_region_graph(
+        observed,
+        reference,
+        block_shape,
+        wrap_azimuth,
+        min_region_area,
+        min_valid_fraction,
+    )?;
+    if regions.is_empty() {
+        let velocity = Array2::from_elem((rows, cols), f64::NAN).into_dyn();
+        let folds = Array2::from_elem((rows, cols), 0i16).into_dyn();
+        let confidence = Array2::from_elem((rows, cols), 0.0f64).into_dyn();
+        let reference_out = if let Some(reference) = reference {
+            reference.to_owned().into_dyn()
+        } else {
+            Array2::from_elem((rows, cols), f64::NAN).into_dyn()
+        };
+        return Ok(RegionGraphResult {
+            velocity,
+            folds,
+            confidence,
+            reference: reference_out,
+            region_count: 0,
+            assigned_regions: 0,
+            seed_region: None,
+            block_shape: choose_block_shape((rows, cols), block_shape),
+            merge_iterations: 0,
+            wrap_azimuth,
+            average_fold: 0.0,
+            regions_with_reference: 0,
+            block_grid_shape: block_ids.dim(),
+            min_region_area,
+            min_valid_fraction,
+            skipped_sparse_blocks,
+        });
+    }
     let (fold_map, mean_map, score_map) = propagate_region_folds(
         &regions,
         nyquist,
@@ -1916,6 +1977,9 @@ pub fn dealias_sweep_region_graph(
         average_fold,
         regions_with_reference,
         block_grid_shape: block_ids.dim(),
+        min_region_area,
+        min_valid_fraction,
+        skipped_sparse_blocks,
     })
 }
 
@@ -2711,6 +2775,8 @@ pub fn dealias_sweep_recursive(
         6,
         max_abs_fold,
         wrap_azimuth,
+        DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
+        DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
     )?;
     let RegionGraphResult {
         velocity: bootstrap_velocity_dyn,
@@ -4434,7 +4500,18 @@ pub fn dealias_sweep_ml(
             )?,
         )
     } else {
-        let region = dealias_sweep_region_graph(observed, nyquist, None, None, 0.75, 6, 8, true)?;
+        let region = dealias_sweep_region_graph(
+            observed,
+            nyquist,
+            None,
+            None,
+            0.75,
+            6,
+            8,
+            true,
+            DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
+            DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
+        )?;
         let initial = region
             .velocity
             .into_dimensionality::<ndarray::Ix2>()
@@ -4505,6 +4582,8 @@ pub fn dealias_sweep_ml(
             6,
             8,
             true,
+            DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
+            DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
         )?;
         let initial = bootstrap
             .velocity
@@ -4713,6 +4792,8 @@ mod tests {
             6,
             8,
             true,
+            DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
+            DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
         )
         .unwrap();
 
@@ -4736,6 +4817,39 @@ mod tests {
             assert!((actual - expected).abs() < 1e-12);
         }
         assert_eq!(result.folds, expected_folds.into_dyn());
+    }
+
+    #[test]
+    fn region_graph_skips_sparse_blocks_and_leaves_them_unresolved() {
+        let observed = array![
+            [5.0, 6.0, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+            [f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+        ];
+        let result = dealias_sweep_region_graph(
+            observed.view(),
+            10.0,
+            None,
+            Some((4, 4)),
+            0.75,
+            6,
+            8,
+            true,
+            DEFAULT_REGION_GRAPH_MIN_REGION_AREA,
+            DEFAULT_REGION_GRAPH_MIN_VALID_FRACTION,
+        )
+        .unwrap();
+
+        assert_eq!(result.region_count, 0);
+        assert!(result.velocity.iter().all(|value| value.is_nan()));
+        assert_eq!(result.skipped_sparse_blocks, 1);
+        assert_eq!(result.min_region_area, 4);
+        assert!((result.min_valid_fraction - 0.15).abs() < 1e-12);
     }
 
     #[test]

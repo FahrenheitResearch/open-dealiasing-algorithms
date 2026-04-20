@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import inspect
 from typing import Iterable
 import warnings
 
@@ -36,6 +37,8 @@ class _Region:
 
 
 _NATIVE_BACKEND = get_rust_backend()
+_DEFAULT_MIN_REGION_AREA = 4
+_DEFAULT_MIN_VALID_FRACTION = 0.15
 
 
 def _safe_nanmedian(data: np.ndarray) -> float:
@@ -81,7 +84,9 @@ def _build_regions(
     reference: np.ndarray | None,
     block_shape: tuple[int, int] | None,
     wrap_azimuth: bool,
-) -> tuple[list[_Region], np.ndarray]:
+    min_region_area: int,
+    min_valid_fraction: float,
+) -> tuple[list[_Region], np.ndarray, int]:
     rows, cols = observed.shape
     block_rows, block_cols = _choose_block_shape(observed.shape, block_shape)
     texture_map = texture_3x3(observed, wrap_azimuth=wrap_azimuth)
@@ -90,6 +95,7 @@ def _build_regions(
     n_col_blocks = max(1, int(np.ceil(cols / block_cols)))
     block_ids = np.full((n_row_blocks, n_col_blocks), -1, dtype=int)
     regions: list[_Region] = []
+    skipped_sparse_blocks = 0
 
     for bi in range(n_row_blocks):
         r0 = bi * block_rows
@@ -99,7 +105,13 @@ def _build_regions(
             c1 = min(cols, c0 + block_cols)
             block = observed[r0:r1, c0:c1]
             finite = np.isfinite(block)
-            if not np.any(finite):
+            finite_count = int(np.count_nonzero(finite))
+            if finite_count == 0:
+                continue
+            total_cells = int(block.size)
+            valid_fraction = finite_count / total_cells
+            if finite_count < min_region_area or valid_fraction < min_valid_fraction:
+                skipped_sparse_blocks += 1
                 continue
             region_id = len(regions)
             block_ids[bi, bj] = region_id
@@ -116,7 +128,7 @@ def _build_regions(
                     col1=c1,
                     mean_obs=mean_obs,
                     texture=texture,
-                    area=int(np.count_nonzero(finite)),
+                    area=finite_count,
                 )
             )
 
@@ -157,7 +169,7 @@ def _build_regions(
             if np.isfinite(region_ref):
                 region.texture = max(region.texture, 0.5 * abs(region.mean_obs - region_ref))
 
-    return regions, block_ids
+    return regions, block_ids, skipped_sparse_blocks
 
 
 def _pick_seed_region(regions: list[_Region], reference: np.ndarray | None) -> int:
@@ -341,9 +353,11 @@ def _expand_region_solution(
 ) -> tuple[np.ndarray, np.ndarray]:
     coarse = np.full(observed.shape, np.nan, dtype=float)
     confidence = np.zeros(observed.shape, dtype=float)
+    covered = np.zeros(observed.shape, dtype=bool)
     for region in regions:
         corrected_mean = mean_map[region.region_id]
         coarse[region.row0:region.row1, region.col0:region.col1] = corrected_mean
+        covered[region.row0:region.row1, region.col0:region.col1] = True
         scale = max(0.30 * nyquist, 1.0 + 0.12 * region.texture)
         conf = float(np.clip(np.exp(-0.5 * (score_map[region.region_id] / max(scale, 1e-6)) ** 2), 0.05, 0.99))
         confidence[region.row0:region.row1, region.col0:region.col1] = conf
@@ -358,7 +372,8 @@ def _expand_region_solution(
         reference_field = coarse
 
     corrected = unfold_to_reference(observed, reference_field, nyquist)
-    corrected = np.where(np.isfinite(observed), corrected, np.nan)
+    corrected = np.where(np.isfinite(observed) & covered, corrected, np.nan)
+    confidence = np.where(covered, confidence, 0.0)
     if np.any(np.isfinite(reference_field)):
         mismatch = np.abs(corrected - reference_field)
         confidence = np.where(np.isfinite(mismatch), np.maximum(confidence, gaussian_confidence(mismatch, 0.40 * nyquist)), confidence)
@@ -375,6 +390,8 @@ def _python_dealias_sweep_region_graph(
     max_iterations: int = 6,
     max_abs_fold: int = 8,
     wrap_azimuth: bool = True,
+    min_region_area: int = _DEFAULT_MIN_REGION_AREA,
+    min_valid_fraction: float = _DEFAULT_MIN_VALID_FRACTION,
 ) -> DealiasResult:
     """Sweep-wide region graph solver inspired by Py-ART's dynamic network family.
 
@@ -391,29 +408,68 @@ def _python_dealias_sweep_region_graph(
     ref = None if reference is None else np.asarray(reference, dtype=float)
     if ref is not None and ref.shape != obs.shape:
         raise ValueError("reference must match observed shape")
+    if min_region_area < 0:
+        raise ValueError("min_region_area must be non-negative")
+    if not 0.0 <= float(min_valid_fraction) <= 1.0:
+        raise ValueError("min_valid_fraction must be between 0 and 1")
 
     valid = np.isfinite(obs)
     if not np.any(valid):
         return attach_result_state_from_fields(
             DealiasResult(
-            velocity=np.full(obs.shape, np.nan, dtype=float),
-            folds=np.zeros(obs.shape, dtype=np.int16),
-            confidence=np.zeros(obs.shape, dtype=float),
-            reference=ref,
-            metadata={
-                "paper_family": "PyARTRegionGraphLite",
-                "method": "region_graph_sweep",
-                "region_count": 0,
-                "merge_iterations": 0,
-            },
+                velocity=np.full(obs.shape, np.nan, dtype=float),
+                folds=np.zeros(obs.shape, dtype=np.int16),
+                confidence=np.zeros(obs.shape, dtype=float),
+                reference=ref,
+                metadata={
+                    "paper_family": "PyARTRegionGraphLite",
+                    "method": "region_graph_sweep",
+                    "region_count": 0,
+                    "merge_iterations": 0,
+                    "min_region_area": int(min_region_area),
+                    "min_valid_fraction": float(min_valid_fraction),
+                    "skipped_sparse_blocks": 0,
+                },
             ),
             obs,
             source="region_graph_sweep",
             parent="PyARTRegionGraphLite",
-            fill_policy="region_graph_consensus",
+            fill_policy="region_graph_consensus_conservative",
         )
 
-    regions, block_ids = _build_regions(obs, reference=ref, block_shape=block_shape, wrap_azimuth=wrap_azimuth)
+    regions, block_ids, skipped_sparse_blocks = _build_regions(
+        obs,
+        reference=ref,
+        block_shape=block_shape,
+        wrap_azimuth=wrap_azimuth,
+        min_region_area=int(min_region_area),
+        min_valid_fraction=float(min_valid_fraction),
+    )
+    if not regions:
+        return attach_result_state_from_fields(
+            DealiasResult(
+                velocity=np.full(obs.shape, np.nan, dtype=float),
+                folds=np.zeros(obs.shape, dtype=np.int16),
+                confidence=np.zeros(obs.shape, dtype=float),
+                reference=ref,
+                metadata={
+                    "paper_family": "PyARTRegionGraphLite",
+                    "method": "region_graph_sweep",
+                    "region_count": 0,
+                    "merge_iterations": 0,
+                    "block_shape": [int(v) for v in _choose_block_shape(obs.shape, block_shape)],
+                    "wrap_azimuth": bool(wrap_azimuth),
+                    "block_grid_shape": [int(v) for v in block_ids.shape],
+                    "min_region_area": int(min_region_area),
+                    "min_valid_fraction": float(min_valid_fraction),
+                    "skipped_sparse_blocks": int(skipped_sparse_blocks),
+                },
+            ),
+            obs,
+            source="region_graph_sweep",
+            parent="PyARTRegionGraphLite",
+            fill_policy="region_graph_consensus_conservative",
+        )
     fold_map, mean_map, score_map = _propagate_region_folds(
         regions,
         nyquist=nyquist,
@@ -446,6 +502,9 @@ def _python_dealias_sweep_region_graph(
         "average_fold": float(np.nanmean(folds[np.isfinite(corrected)])) if np.any(np.isfinite(corrected)) else 0.0,
         "regions_with_reference": int(sum(np.isfinite(_region_mean(ref, r.row0, r.row1, r.col0, r.col1)) for r in regions)) if ref is not None else 0,
         "block_grid_shape": [int(v) for v in block_ids.shape],
+        "min_region_area": int(min_region_area),
+        "min_valid_fraction": float(min_valid_fraction),
+        "skipped_sparse_blocks": int(skipped_sparse_blocks),
     }
     return attach_result_state_from_fields(
         DealiasResult(
@@ -458,7 +517,7 @@ def _python_dealias_sweep_region_graph(
         obs,
         source="region_graph_sweep",
         parent="PyARTRegionGraphLite",
-        fill_policy="region_graph_consensus",
+        fill_policy="region_graph_consensus_conservative",
     )
 
 
@@ -472,6 +531,8 @@ def dealias_sweep_region_graph(
     max_iterations: int = 6,
     max_abs_fold: int = 8,
     wrap_azimuth: bool = True,
+    min_region_area: int = _DEFAULT_MIN_REGION_AREA,
+    min_valid_fraction: float = _DEFAULT_MIN_VALID_FRACTION,
 ) -> DealiasResult:
     """Sweep-wide region graph solver inspired by Py-ART's dynamic network family.
 
@@ -488,19 +549,52 @@ def dealias_sweep_region_graph(
     ref = None if reference is None else np.asarray(reference, dtype=float)
     if ref is not None and ref.shape != obs.shape:
         raise ValueError("reference must match observed shape")
+    if min_region_area < 0:
+        raise ValueError("min_region_area must be non-negative")
+    if not 0.0 <= float(min_valid_fraction) <= 1.0:
+        raise ValueError("min_valid_fraction must be between 0 and 1")
 
     backend = resolve_rust_backend(_NATIVE_BACKEND)
     if backend is not None and hasattr(backend, "dealias_sweep_region_graph"):
-        native_result = backend.dealias_sweep_region_graph(
-            obs,
-            float(nyquist),
-            ref,
-            None if block_shape is None else tuple(int(v) for v in block_shape),
-            float(reference_weight),
-            int(max_iterations),
-            int(max_abs_fold),
-            bool(wrap_azimuth),
-        )
+        backend_method = backend.dealias_sweep_region_graph
+        supports_conservative_args = True
+        try:
+            signature = inspect.signature(backend_method)
+            accepts_varargs = any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in signature.parameters.values())
+            positional_params = [
+                param
+                for param in signature.parameters.values()
+                if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            if not accepts_varargs and len(positional_params) < 10:
+                supports_conservative_args = False
+        except (TypeError, ValueError):
+            supports_conservative_args = True
+
+        if supports_conservative_args:
+            native_result = backend_method(
+                obs,
+                float(nyquist),
+                ref,
+                None if block_shape is None else tuple(int(v) for v in block_shape),
+                float(reference_weight),
+                int(max_iterations),
+                int(max_abs_fold),
+                bool(wrap_azimuth),
+                int(min_region_area),
+                float(min_valid_fraction),
+            )
+        else:
+            native_result = backend_method(
+                obs,
+                float(nyquist),
+                ref,
+                None if block_shape is None else tuple(int(v) for v in block_shape),
+                float(reference_weight),
+                int(max_iterations),
+                int(max_abs_fold),
+                bool(wrap_azimuth),
+            )
         if isinstance(native_result, DealiasResult):
             return native_result
         values = tuple(native_result)
@@ -517,6 +611,9 @@ def dealias_sweep_region_graph(
         meta.setdefault("merge_iterations", int(max_iterations))
         meta.setdefault("wrap_azimuth", bool(wrap_azimuth))
         meta.setdefault("block_shape", [int(v) for v in _choose_block_shape(obs.shape, block_shape)])
+        meta.setdefault("min_region_area", int(min_region_area))
+        meta.setdefault("min_valid_fraction", float(min_valid_fraction))
+        meta.setdefault("skipped_sparse_blocks", 0)
         return attach_result_state_from_fields(
             DealiasResult(
             velocity=np.asarray(velocity, dtype=float),
@@ -528,7 +625,7 @@ def dealias_sweep_region_graph(
             obs,
             source="region_graph_sweep",
             parent="PyARTRegionGraphLite",
-            fill_policy=str(meta.get("fill_policy", "region_graph_consensus")),
+            fill_policy=str(meta.get("fill_policy", "region_graph_consensus_conservative")),
         )
 
     return _python_dealias_sweep_region_graph(
@@ -540,4 +637,6 @@ def dealias_sweep_region_graph(
         max_iterations=max_iterations,
         max_abs_fold=max_abs_fold,
         wrap_azimuth=wrap_azimuth,
+        min_region_area=min_region_area,
+        min_valid_fraction=min_valid_fraction,
     )

@@ -77,6 +77,9 @@ pub struct RegionGraphResult {
     pub average_fold: f64,
     pub regions_with_reference: usize,
     pub block_grid_shape: (usize, usize),
+    pub min_region_area: usize,
+    pub min_valid_fraction: f64,
+    pub skipped_sparse_blocks: usize,
 }
 
 pub struct RecursiveResult {

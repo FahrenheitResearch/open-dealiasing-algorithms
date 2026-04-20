@@ -314,7 +314,7 @@ fn dealias_sweep_recursive<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (observed, nyquist, reference=None, block_shape=None, reference_weight=0.75, max_iterations=6, max_abs_fold=8, wrap_azimuth=true))]
+#[pyo3(signature = (observed, nyquist, reference=None, block_shape=None, reference_weight=0.75, max_iterations=6, max_abs_fold=8, wrap_azimuth=true, min_region_area=4, min_valid_fraction=0.15))]
 fn dealias_sweep_region_graph<'py>(
     py: Python<'py>,
     observed: PyReadonlyArrayDyn<'py, f64>,
@@ -325,6 +325,8 @@ fn dealias_sweep_region_graph<'py>(
     max_iterations: usize,
     max_abs_fold: i16,
     wrap_azimuth: bool,
+    min_region_area: usize,
+    min_valid_fraction: f64,
 ) -> PyResult<(
     Bound<'py, PyArrayDyn<f64>>,
     Bound<'py, PyArrayDyn<i16>>,
@@ -361,6 +363,8 @@ fn dealias_sweep_region_graph<'py>(
             max_iterations,
             max_abs_fold,
             wrap_azimuth,
+            min_region_area,
+            min_valid_fraction,
         )
     })?;
     let metadata = PyDict::new(py);
@@ -368,6 +372,9 @@ fn dealias_sweep_region_graph<'py>(
     metadata.set_item("method", "region_graph_sweep")?;
     metadata.set_item("region_count", result.region_count)?;
     metadata.set_item("merge_iterations", result.merge_iterations)?;
+    metadata.set_item("min_region_area", result.min_region_area)?;
+    metadata.set_item("min_valid_fraction", result.min_valid_fraction)?;
+    metadata.set_item("skipped_sparse_blocks", result.skipped_sparse_blocks)?;
     if result.region_count > 0 {
         metadata.set_item("assigned_regions", result.assigned_regions)?;
         metadata.set_item("seed_region", result.seed_region)?;

@@ -25,6 +25,12 @@ export interface PackedVolume {
   gateCount: number;
 }
 
+export interface SweepPackingOptions {
+  noDataValue?: number;
+  noDataValues?: ArrayLike<number>;
+  zeroIsMissing?: boolean;
+}
+
 export interface PackedDealiasResult {
   velocity: Float64Array;
   folds: Int16Array;
@@ -65,6 +71,14 @@ export interface JH01Options {
 
 export interface RegionGraphOptions {
   reference?: PackedSweep | number[][];
+  blockRows?: number;
+  blockCols?: number;
+  referenceWeight?: number;
+  maxIterations?: number;
+  maxAbsFold?: number;
+  wrapAzimuth?: boolean;
+  minRegionArea?: number;
+  minValidFraction?: number;
 }
 
 export interface RecursiveOptions extends RegionGraphOptions {}
@@ -195,9 +209,59 @@ function cloneVolume(field: number[][][]): number[][][] {
   return field.map((sweep) => cloneMatrix(sweep));
 }
 
-export function packSweep(field: number[][] | PackedSweep): PackedSweep {
-  if (isPackedSweep(field)) {
+function buildNoDataMatcher(options?: SweepPackingOptions): ((value: number) => boolean) | null {
+  if (!options) {
+    return null;
+  }
+  const sentinels = new Set<number>();
+  if (typeof options.noDataValue === "number" && Number.isFinite(options.noDataValue)) {
+    sentinels.add(options.noDataValue);
+  }
+  if (options.noDataValues) {
+    for (const value of Array.from(options.noDataValues)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        sentinels.add(value);
+      }
+    }
+  }
+  const zeroIsMissing = options.zeroIsMissing === true;
+  if (!zeroIsMissing && sentinels.size === 0) {
+    return null;
+  }
+  return (value: number): boolean => {
+    if (!Number.isFinite(value)) {
+      return true;
+    }
+    if (zeroIsMissing && value === 0) {
+      return true;
+    }
+    return sentinels.has(value);
+  };
+}
+
+export function sanitizePackedSweep(field: PackedSweep, options?: SweepPackingOptions): PackedSweep {
+  const isMissing = buildNoDataMatcher(options);
+  if (!isMissing) {
     return field;
+  }
+  const data = new Float64Array(field.data.length);
+  let changed = false;
+  for (let index = 0; index < field.data.length; index++) {
+    const value = field.data[index];
+    const normalized = isMissing(value) ? Number.NaN : value;
+    data[index] = normalized;
+    changed ||= !Object.is(normalized, value);
+  }
+  if (!changed) {
+    return field;
+  }
+  return { data, azimuthCount: field.azimuthCount, gateCount: field.gateCount };
+}
+
+export function packSweep(field: number[][] | PackedSweep, options?: SweepPackingOptions): PackedSweep {
+  const isMissing = buildNoDataMatcher(options);
+  if (isPackedSweep(field)) {
+    return sanitizePackedSweep(field, options);
   }
   if (!isArrayOfArrays(field) || field.length === 0 || field[0].length === 0) {
     throw new Error("sweep must be a non-empty 2D numeric matrix");
@@ -210,7 +274,8 @@ export function packSweep(field: number[][] | PackedSweep): PackedSweep {
       throw new Error("sweep rows must all have the same length");
     }
     for (let j = 0; j < gateCount; j++) {
-      data[i * gateCount + j] = field[i][j];
+      const value = field[i][j];
+      data[i * gateCount + j] = isMissing?.(value) ? Number.NaN : value;
     }
   }
   return { data, azimuthCount, gateCount };

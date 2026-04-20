@@ -240,6 +240,8 @@ pub fn dealias_sweep_region_graph(
     max_iterations: usize,
     max_abs_fold: i16,
     wrap_azimuth: bool,
+    min_region_area: usize,
+    min_valid_fraction: f64,
 ) -> Result<FlatDealiasResult2D, JsValue> {
     let observed = require_2d(observed, rows, cols, "observed")?;
     let reference = optional_2d(reference, rows, cols, "reference")?;
@@ -257,6 +259,8 @@ pub fn dealias_sweep_region_graph(
         max_iterations,
         max_abs_fold,
         wrap_azimuth,
+        min_region_area,
+        min_valid_fraction,
     )
     .map_err(js_error)?;
     Ok(result_2d(
@@ -278,6 +282,9 @@ pub fn dealias_sweep_region_graph(
             "average_fold": result.average_fold,
             "regions_with_reference": result.regions_with_reference,
             "block_grid_shape": [result.block_grid_shape.0, result.block_grid_shape.1],
+            "min_region_area": result.min_region_area,
+            "min_valid_fraction": result.min_valid_fraction,
+            "skipped_sparse_blocks": result.skipped_sparse_blocks,
         }),
     ))
 }
@@ -295,6 +302,8 @@ pub fn dealias_sweep_region_graph_velocity(
     max_iterations: usize,
     max_abs_fold: i16,
     wrap_azimuth: bool,
+    min_region_area: usize,
+    min_valid_fraction: f64,
 ) -> Result<FlatVelocityResult2D, JsValue> {
     let observed = require_2d(observed, rows, cols, "observed")?;
     let reference = optional_2d(reference, rows, cols, "reference")?;
@@ -312,6 +321,8 @@ pub fn dealias_sweep_region_graph_velocity(
         max_iterations,
         max_abs_fold,
         wrap_azimuth,
+        min_region_area,
+        min_valid_fraction,
     )
     .map_err(js_error)?;
     Ok(result_velocity_2d(
@@ -330,6 +341,9 @@ pub fn dealias_sweep_region_graph_velocity(
             "average_fold": result.average_fold,
             "regions_with_reference": result.regions_with_reference,
             "block_grid_shape": [result.block_grid_shape.0, result.block_grid_shape.1],
+            "min_region_area": result.min_region_area,
+            "min_valid_fraction": result.min_valid_fraction,
+            "skipped_sparse_blocks": result.skipped_sparse_blocks,
             "output": "velocity_only",
         }),
     ))
@@ -448,6 +462,8 @@ pub fn dealias_sweep_variational(
     bootstrap_reference_weight: f64,
     bootstrap_iterations: usize,
     bootstrap_max_abs_fold: i16,
+    bootstrap_min_region_area: usize,
+    bootstrap_min_valid_fraction: f64,
     max_abs_fold: i16,
     neighbor_weight: f64,
     reference_weight: f64,
@@ -471,6 +487,8 @@ pub fn dealias_sweep_variational(
         bootstrap_iterations,
         bootstrap_max_abs_fold,
         wrap_azimuth,
+        bootstrap_min_region_area,
+        bootstrap_min_valid_fraction,
     )
     .map_err(js_error)?;
     let initial = ndarray::ArrayD::from_shape_vec(
@@ -509,6 +527,9 @@ pub fn dealias_sweep_variational(
                 "method": "region_graph_sweep",
                 "region_count": bootstrap.region_count,
                 "merge_iterations": bootstrap.merge_iterations,
+                "min_region_area": bootstrap.min_region_area,
+                "min_valid_fraction": bootstrap.min_valid_fraction,
+                "skipped_sparse_blocks": bootstrap.skipped_sparse_blocks,
             },
             "iterations_used": refined.iterations_used,
             "changed_gates": refined.changed_gates,
@@ -527,6 +548,8 @@ pub fn dealias_sweep_variational_velocity(
     reference: Vec<f64>,
     block_rows: Option<usize>,
     block_cols: Option<usize>,
+    bootstrap_min_region_area: usize,
+    bootstrap_min_valid_fraction: f64,
     max_abs_fold: i16,
     neighbor_weight: f64,
     reference_weight: f64,
@@ -550,6 +573,8 @@ pub fn dealias_sweep_variational_velocity(
         max_iterations,
         max_abs_fold,
         wrap_azimuth,
+        bootstrap_min_region_area,
+        bootstrap_min_valid_fraction,
     )
     .map_err(js_error)?;
     let initial = ndarray::ArrayD::from_shape_vec(
