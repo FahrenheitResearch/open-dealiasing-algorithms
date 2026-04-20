@@ -371,12 +371,17 @@ fn dealias_sweep_region_graph<'py>(
     metadata.set_item("paper_family", "PyARTRegionGraphLite")?;
     metadata.set_item("method", result.method)?;
     metadata.set_item("region_count", result.region_count)?;
+    metadata.set_item("seedable_region_count", result.seedable_region_count)?;
+    metadata.set_item("unresolved_regions", result.unresolved_regions)?;
     metadata.set_item("merge_iterations", result.merge_iterations)?;
     metadata.set_item("min_region_area", result.min_region_area)?;
     metadata.set_item("min_valid_fraction", result.min_valid_fraction)?;
     metadata.set_item("skipped_sparse_blocks", result.skipped_sparse_blocks)?;
     metadata.set_item("safety_fallback_applied", result.safety_fallback_applied)?;
-    metadata.set_item("safety_fallback_reason", result.safety_fallback_reason.clone())?;
+    metadata.set_item(
+        "safety_fallback_reason",
+        result.safety_fallback_reason.clone(),
+    )?;
     metadata.set_item("candidate_cost", result.candidate_cost)?;
     metadata.set_item("fallback_cost", result.fallback_cost)?;
     metadata.set_item("disagreement_fraction", result.disagreement_fraction)?;
